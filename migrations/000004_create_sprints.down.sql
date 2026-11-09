@@ -1,0 +1,2 @@
+DROP TABLE IF EXISTS SprintAssignments;
+DROP TABLE IF EXISTS Sprints;

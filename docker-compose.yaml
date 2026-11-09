@@ -1,0 +1,49 @@
+x-migrate: &migrate
+  image: migrate/migrate:v4.18.1
+  depends_on:
+    db:
+      condition: service_healthy
+  volumes:
+    - ./migrations:/migrations:ro
+  restart: "no"
+
+services:
+  db:
+    image: mysql:8.4
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_0900_ai_ci"]
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?set MYSQL_ROOT_PASSWORD in .env}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:?set MYSQL_DATABASE in .env}
+      MIGRATOR_USER: ${MIGRATOR_USER:?set MIGRATOR_USER in .env}
+      MIGRATOR_PASSWORD: ${MIGRATOR_PASSWORD:?set MIGRATOR_PASSWORD in .env}
+      APP_USER: ${APP_USER:?set APP_USER in .env}
+      APP_PASSWORD: ${APP_PASSWORD:?set APP_PASSWORD in .env}
+    ports:
+      - "127.0.0.1:3306:3306"
+    volumes:
+      - dbdata:/var/lib/mysql
+      - ./docker/mysql/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  migrate:
+    <<: *migrate
+    command:
+      - "-path=/migrations"
+      - "-database=mysql://${MIGRATOR_USER}:${MIGRATOR_PASSWORD}@tcp(db:3306)/${MYSQL_DATABASE}?multiStatements=true"
+      - "up"
+
+  migrate-down:
+    <<: *migrate
+    profiles: ["tools"]
+    command:
+      - "-path=/migrations"
+      - "-database=mysql://${MIGRATOR_USER}:${MIGRATOR_PASSWORD}@tcp(db:3306)/${MYSQL_DATABASE}?multiStatements=true"
+      - "down"
+      - "1"
+
+volumes:
+  dbdata:
