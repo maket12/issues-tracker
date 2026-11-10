@@ -81,6 +81,8 @@ func newEnv(t *testing.T) *env {
 	seed := []string{
 		"INSERT INTO Roles (id, name) VALUES ('member','Member'), ('viewer','Viewer')",
 		"INSERT INTO RolesPermissions (role, permission) SELECT `key`, 'CREATE_ISSUE' FROM Roles WHERE id = 'member'",
+		"INSERT INTO RolesPermissions (role, permission) SELECT `key`, 'VIEW_ISSUE' FROM Roles WHERE id = 'member'",
+		"INSERT INTO RolesPermissions (role, permission) SELECT `key`, 'EDIT_ISSUE' FROM Roles WHERE id = 'member'",
 		"INSERT INTO IssueTypes (id, name) VALUES ('bug','Bug'), ('task','Task')",
 		"INSERT INTO Priorities (id, name) VALUES ('low','Low'), ('high','High')",
 		"INSERT INTO Statuses (id, name) VALUES ('open','Open'), ('done','Done')",
@@ -162,6 +164,16 @@ func (e *env) createIssue(t *testing.T, user string, body any) (int, []byte) {
 func (e *env) fillAttributes(t *testing.T, user, issueID string, body any) (int, []byte) {
 	t.Helper()
 	return e.do(t, http.MethodPut, "/api/issues/"+issueID, user, body)
+}
+
+func (e *env) viewIssue(t *testing.T, user, issueID string) (int, []byte) {
+	t.Helper()
+	return e.do(t, http.MethodGet, "/api/issues/"+issueID, user, nil)
+}
+
+func (e *env) editIssue(t *testing.T, user, issueID string, body any) (int, []byte) {
+	t.Helper()
+	return e.do(t, http.MethodPatch, "/api/issues/"+issueID, user, body)
 }
 
 // newIssue creates an issue as alice and returns it.
@@ -570,4 +582,120 @@ func TestFillAttributes_ConcurrentEditsNeverCorruptTheIssue(t *testing.T) {
 	require.NotEmpty(t, winners, "at least one writer succeeds")
 	assert.True(t, winners[e.text(t, "SELECT name FROM Issue WHERE id = ?", created.ID)],
 		"the stored issue is the work of a writer that was told it succeeded")
+}
+
+func TestViewIssue_HappyPathForAuthorAndAssignee(t *testing.T) {
+	e := newEnv(t)
+	created := e.newIssue(t)
+	status, raw := e.fillAttributes(t, "alice", created.ID, fillBody()) // assigns bob
+	require.Equal(t, http.StatusOK, status, string(raw))
+
+	for _, user := range []string{"alice", "bob"} {
+		status, raw := e.viewIssue(t, user, created.ID)
+		require.Equal(t, http.StatusOK, status, "%s: %s", user, string(raw))
+		got := decodeIssue(t, raw)
+
+		assert.Equal(t, created.ID, got.ID)
+		assert.Equal(t, "Login fails on Safari", got.Name)
+		assert.Equal(t, ref{ID: "task", Name: "Task"}, got.Type)
+		require.NotNil(t, got.Description)
+		assert.Equal(t, "<p>updated</p>", *got.Description)
+		assert.Equal(t, ref{ID: "alice", Name: "alice"}, got.Author)
+		require.NotNil(t, got.Assignee)
+		assert.Equal(t, ref{ID: "bob", Name: "bob"}, *got.Assignee)
+		assert.Equal(t, ref{ID: "open", Name: "Open"}, got.Status)
+		assert.Equal(t, ref{ID: "high", Name: "High"}, got.Priority)
+		assert.Equal(t, "2026-11-10", got.StartDate)
+		require.NotNil(t, got.DueDate)
+		assert.Equal(t, "2026-11-20", *got.DueDate)
+	}
+}
+
+func TestViewIssue_AccessAndPermissionRules(t *testing.T) {
+	e := newEnv(t)
+	created := e.newIssue(t)
+
+	// Unauthenticated
+	status, _ := e.viewIssue(t, "", created.ID)
+	assert.Equal(t, http.StatusUnauthorized, status)
+
+	// Non-existent issue
+	status, _ = e.viewIssue(t, "alice", "ISS-9999")
+	assert.Equal(t, http.StatusNotFound, status)
+
+	// Stranger with VIEW_ISSUE permission (carol) cannot view
+	status, _ = e.viewIssue(t, "carol", created.ID)
+	assert.Equal(t, http.StatusForbidden, status)
+
+	// Assignee without VIEW_ISSUE permission (vera) cannot view
+	body := fillBody()
+	body["assigneeId"] = "vera"
+	status, _ = e.fillAttributes(t, "alice", created.ID, body)
+	require.Equal(t, http.StatusOK, status)
+
+	status, _ = e.viewIssue(t, "vera", created.ID)
+	assert.Equal(t, http.StatusForbidden, status)
+}
+
+func TestEditIssue_HappyPath(t *testing.T) {
+	e := newEnv(t)
+	created := e.newIssue(t)
+
+	body := fillBody()
+	body["version"] = created.Version
+	status, raw := e.editIssue(t, "alice", created.ID, body)
+	require.Equal(t, http.StatusOK, status, string(raw))
+	got := decodeIssue(t, raw)
+
+	assert.Equal(t, created.ID, got.ID)
+	assert.Equal(t, "Login fails on Safari", got.Name)
+	assert.Equal(t, ref{ID: "task", Name: "Task"}, got.Type)
+	require.NotNil(t, got.Assignee)
+	assert.Equal(t, ref{ID: "bob", Name: "bob"}, *got.Assignee)
+	assert.Equal(t, ref{ID: "high", Name: "High"}, got.Priority)
+	assert.NotEqual(t, created.Version, got.Version)
+}
+
+func TestEditIssue_AccessAndPermissionRules(t *testing.T) {
+	e := newEnv(t)
+	created := e.newIssue(t)
+
+	// Unauthenticated
+	status, _ := e.editIssue(t, "", created.ID, fillBody())
+	assert.Equal(t, http.StatusUnauthorized, status)
+
+	// Non-existent issue
+	status, _ = e.editIssue(t, "alice", "ISS-9999", fillBody())
+	assert.Equal(t, http.StatusNotFound, status)
+
+	// Stranger with EDIT_ISSUE permission (carol) is denied
+	status, _ = e.editIssue(t, "carol", created.ID, fillBody())
+	assert.Equal(t, http.StatusForbidden, status)
+
+	// Assignee without EDIT_ISSUE permission (vera) is denied
+	assignVera := fillBody()
+	assignVera["assigneeId"] = "vera"
+	status, _ = e.fillAttributes(t, "alice", created.ID, assignVera)
+	require.Equal(t, http.StatusOK, status)
+
+	status, _ = e.editIssue(t, "vera", created.ID, fillBody())
+	assert.Equal(t, http.StatusForbidden, status)
+}
+
+func TestEditIssue_StaleVersionReturnsConflict(t *testing.T) {
+	e := newEnv(t)
+	created := e.newIssue(t)
+
+	firstEdit := fillBody()
+	firstEdit["name"] = "First update"
+	firstEdit["version"] = created.Version
+	status, _ := e.editIssue(t, "alice", created.ID, firstEdit)
+	require.Equal(t, http.StatusOK, status)
+
+	secondEdit := fillBody()
+	secondEdit["name"] = "Stale update"
+	secondEdit["version"] = created.Version // outdated version
+	status, _ = e.editIssue(t, "alice", created.ID, secondEdit)
+	assert.Equal(t, http.StatusConflict, status)
+	assert.Equal(t, "First update", e.text(t, "SELECT name FROM Issue WHERE id = ?", created.ID))
 }

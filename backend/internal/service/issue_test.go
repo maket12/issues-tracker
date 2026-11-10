@@ -260,9 +260,9 @@ func TestFillAttributes_ReportsEveryProblemAtOnce(t *testing.T) {
 
 func TestFillAttributes_RequiredAndOptionalAttributes(t *testing.T) {
 	tests := []struct {
-		name    string
-		mutate  func(*AttributeData)
-		field   string
+		name   string
+		mutate func(*AttributeData)
+		field  string
 	}{
 		{"missing type", func(a *AttributeData) { a.TypeID = "" }, "typeId"},
 		{"missing priority", func(a *AttributeData) { a.PriorityID = " " }, "priorityId"},
@@ -302,4 +302,140 @@ func TestFillAttributes_ConcurrentModificationIsReported(t *testing.T) {
 
 	_, err := NewIssueService(repo).FillAttributes(context.Background(), "ISS-1", validAttrs(), member())
 	assert.ErrorIs(t, err, domain.ErrConflict)
+}
+
+// ---------------------------------------------------------------- IM-3 viewIssue
+
+func TestViewIssue_AccessAndPermissionRules(t *testing.T) {
+	repo := newFakeRepo()
+	issue := existingIssue()
+	issue.Assignee = &domain.User{ID: "bob", Name: "Bob"}
+	repo.issues["ISS-1"] = issue
+	svc := NewIssueService(repo)
+	ctx := context.Background()
+
+	_, err := svc.ViewIssue(ctx, "ISS-1", nil)
+	assert.ErrorIs(t, err, domain.ErrUnauthorized)
+
+	// Author without VIEW_ISSUE permission is denied before looking up the issue
+	_, err = svc.ViewIssue(ctx, "ISS-1", userWith("alice", domain.CreateIssue))
+	assert.ErrorIs(t, err, domain.ErrForbidden)
+
+	_, err = svc.ViewIssue(ctx, "ISS-404", userWith("alice", domain.ViewIssue))
+	assert.ErrorIs(t, err, domain.ErrNotFound)
+
+	// User with VIEW_ISSUE permission who is neither author nor assignee is denied
+	_, err = svc.ViewIssue(ctx, "ISS-1", userWith("carol", domain.ViewIssue))
+	assert.ErrorIs(t, err, domain.ErrForbidden)
+
+	// Author with VIEW_ISSUE can view
+	gotAuthor, err := svc.ViewIssue(ctx, "ISS-1", userWith("alice", domain.ViewIssue))
+	require.NoError(t, err)
+	assert.Equal(t, "ISS-1", gotAuthor.ID)
+	assert.Equal(t, "Bug", gotAuthor.Type.Name)
+	assert.Equal(t, "Low", gotAuthor.Priority.Name)
+	assert.Equal(t, "Open", gotAuthor.Status.Name)
+
+	// Assignee with VIEW_ISSUE can view
+	gotAssignee, err := svc.ViewIssue(ctx, "ISS-1", userWith("bob", domain.ViewIssue))
+	require.NoError(t, err)
+	assert.Equal(t, "ISS-1", gotAssignee.ID)
+}
+
+// ---------------------------------------------------------------- IM-4 editIssue
+
+func TestEditIssue_AccessAndPermissionRules(t *testing.T) {
+	repo := newFakeRepo()
+	issue := existingIssue()
+	issue.Assignee = &domain.User{ID: "bob", Name: "Bob"}
+	repo.issues["ISS-1"] = issue
+	svc := NewIssueService(repo)
+	ctx := context.Background()
+
+	_, err := svc.EditIssue(ctx, "ISS-1", validAttrs(), nil)
+	assert.ErrorIs(t, err, domain.ErrUnauthorized)
+
+	// User without EDIT_ISSUE permission is rejected before any lookup
+	_, err = svc.EditIssue(ctx, "ISS-1", validAttrs(), userWith("alice", domain.ViewIssue))
+	assert.ErrorIs(t, err, domain.ErrForbidden)
+	assert.Zero(t, repo.lookups, "nothing is looked up when EDIT_ISSUE permission is missing")
+	assert.Zero(t, repo.saves)
+
+	_, err = svc.EditIssue(ctx, "ISS-404", validAttrs(), userWith("alice", domain.EditIssue))
+	assert.ErrorIs(t, err, domain.ErrNotFound)
+
+	// Stranger with EDIT_ISSUE permission cannot edit someone else's issue
+	_, err = svc.EditIssue(ctx, "ISS-1", validAttrs(), userWith("carol", domain.EditIssue))
+	assert.ErrorIs(t, err, domain.ErrForbidden)
+	assert.Zero(t, repo.lookups)
+	assert.Zero(t, repo.saves)
+
+	// Author and Assignee with EDIT_ISSUE permission can edit
+	_, err = svc.EditIssue(ctx, "ISS-1", validAttrs(), userWith("alice", domain.EditIssue))
+	assert.NoError(t, err)
+	_, err = svc.EditIssue(ctx, "ISS-1", validAttrs(), userWith("bob", domain.EditIssue))
+	assert.NoError(t, err)
+}
+
+func TestEditIssue_FollowsTheSequenceDiagram(t *testing.T) {
+	repo := newFakeRepo()
+	repo.issues["ISS-1"] = existingIssue()
+	svc := NewIssueService(repo)
+
+	changes := validAttrs()
+	changes.Version = "v1"
+
+	updated, err := svc.EditIssue(context.Background(), "ISS-1", changes, userWith("alice", domain.EditIssue))
+	require.NoError(t, err)
+
+	assert.Equal(t, "ISS-1", updated.ID)
+	assert.Equal(t, "New name", updated.Name)
+	assert.Equal(t, "high", updated.Priority.ID)
+	assert.Equal(t, "bob", updated.Assignee.ID)
+	assert.Equal(t, "2026-11-20", updated.DueDate.Format("2006-01-02"))
+	assert.Equal(t, "alice", updated.Author.ID)
+	assert.Equal(t, "open", updated.Status.ID)
+}
+
+func TestEditIssue_DetectsVersionConflictBeforeLookupAndOnSave(t *testing.T) {
+	repo := newFakeRepo()
+	repo.issues["ISS-1"] = existingIssue() // version is "v1"
+	svc := NewIssueService(repo)
+
+	stale := validAttrs()
+	stale.Version = "stale-version"
+
+	_, err := svc.EditIssue(context.Background(), "ISS-1", stale, userWith("alice", domain.EditIssue))
+	assert.ErrorIs(t, err, domain.ErrConflict)
+	assert.Zero(t, repo.lookups, "version mismatch is caught before looking up attributes")
+	assert.Zero(t, repo.saves)
+
+	// Conflict on repository save
+	repo.saveErr = domain.ErrConflict
+	matching := validAttrs()
+	matching.Version = "v1"
+	_, err = svc.EditIssue(context.Background(), "ISS-1", matching, userWith("alice", domain.EditIssue))
+	assert.ErrorIs(t, err, domain.ErrConflict)
+}
+
+func TestEditIssue_ValidatesAttributes(t *testing.T) {
+	repo := newFakeRepo()
+	repo.issues["ISS-1"] = existingIssue()
+	svc := NewIssueService(repo)
+
+	bad := validAttrs()
+	bad.Name = "   "
+	bad.PriorityID = "high"
+	bad.DueDate = date("2026-11-01") // earlier than StartDate 2026-11-10
+
+	_, err := svc.EditIssue(context.Background(), "ISS-1", bad, userWith("alice", domain.EditIssue))
+	fields := fieldsOf(t, err)
+	assert.Contains(t, fields, "name")
+	assert.Contains(t, fields, "dueDate")
+	assert.Zero(t, repo.saves)
+
+	badPriority := validAttrs()
+	badPriority.PriorityID = "unknown"
+	_, err = svc.EditIssue(context.Background(), "ISS-1", badPriority, userWith("alice", domain.EditIssue))
+	assert.Contains(t, fieldsOf(t, err), "priorityId")
 }

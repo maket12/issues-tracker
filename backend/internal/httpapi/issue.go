@@ -22,6 +22,8 @@ const maxBodyBytes = 2 << 20
 type IssueUseCases interface {
 	CreateIssue(ctx context.Context, name, typeID string, description *string, author *domain.User) (*domain.Issue, error)
 	FillAttributes(ctx context.Context, issueID string, attr service.AttributeData, user *domain.User) (*domain.Issue, error)
+	ViewIssue(ctx context.Context, issueID string, user *domain.User) (*domain.Issue, error)
+	EditIssue(ctx context.Context, issueID string, changes service.AttributeData, user *domain.User) (*domain.Issue, error)
 }
 
 type userKey struct{}
@@ -41,7 +43,9 @@ func NewRouter(issues IssueUseCases, authenticate func(http.Handler) http.Handle
 	r.Route("/api", func(r chi.Router) {
 		r.Use(authenticate)
 		r.Post("/issues", createIssue(issues))
+		r.Get("/issues/{id}", viewIssue(issues))
 		r.Put("/issues/{id}", fillAttributes(issues))
+		r.Patch("/issues/{id}", editIssue(issues))
 	})
 	return r
 }
@@ -60,6 +64,17 @@ type fillAttributesRequest struct {
 	PriorityID  string       `json:"priorityId"`
 	StartDate   *domain.Date `json:"startDate"`
 	DueDate     *domain.Date `json:"dueDate"`
+}
+
+type editIssueRequest struct {
+	Name        string       `json:"name"`
+	TypeID      string       `json:"typeId"`
+	Description *string      `json:"description"`
+	AssigneeID  *string      `json:"assigneeId"`
+	PriorityID  string       `json:"priorityId"`
+	StartDate   *domain.Date `json:"startDate"`
+	DueDate     *domain.Date `json:"dueDate"`
+	Version     string       `json:"version"`
 }
 
 type refDTO struct {
@@ -131,6 +146,45 @@ func fillAttributes(uc IssueUseCases) http.HandlerFunc {
 		issue, err := uc.FillAttributes(r.Context(), chi.URLParam(r, "id"), service.AttributeData{
 			Name: req.Name, TypeID: req.TypeID, Description: req.Description, AssigneeID: req.AssigneeID,
 			PriorityID: req.PriorityID, StartDate: req.StartDate, DueDate: req.DueDate,
+		}, user)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, toDTO(issue))
+	}
+}
+
+func viewIssue(uc IssueUseCases) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		user := UserFrom(r.Context())
+		if user == nil {
+			writeError(w, domain.ErrUnauthorized)
+			return
+		}
+		issue, err := uc.ViewIssue(r.Context(), chi.URLParam(r, "id"), user)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, toDTO(issue))
+	}
+}
+
+func editIssue(uc IssueUseCases) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		user := UserFrom(r.Context())
+		if user == nil {
+			writeError(w, domain.ErrUnauthorized)
+			return
+		}
+		var req editIssueRequest
+		if !decodeBody(w, r, &req) {
+			return
+		}
+		issue, err := uc.EditIssue(r.Context(), chi.URLParam(r, "id"), service.AttributeData{
+			Name: req.Name, TypeID: req.TypeID, Description: req.Description, AssigneeID: req.AssigneeID,
+			PriorityID: req.PriorityID, StartDate: req.StartDate, DueDate: req.DueDate, Version: req.Version,
 		}, user)
 		if err != nil {
 			writeError(w, err)

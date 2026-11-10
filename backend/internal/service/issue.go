@@ -27,6 +27,7 @@ type AttributeData struct {
 	PriorityID  string
 	StartDate   *domain.Date
 	DueDate     *domain.Date
+	Version     string // optional expected version for optimistic locking in IM-4
 }
 
 type IssueService struct {
@@ -90,11 +91,61 @@ func (s *IssueService) FillAttributes(ctx context.Context, issueID string, attr 
 		return nil, domain.ErrForbidden
 	}
 
+	return s.applyAttributes(ctx, issue, attr)
+}
+
+// ViewIssue implements IM-3: View issue.
+func (s *IssueService) ViewIssue(ctx context.Context, issueID string, user *domain.User) (*domain.Issue, error) {
+	if user == nil {
+		return nil, domain.ErrUnauthorized
+	}
+	// user.hasPermission(VIEW_ISSUE) -> role.hasPermission(VIEW_ISSUE)
+	if !user.HasPermission(domain.ViewIssue) {
+		return nil, domain.ErrForbidden
+	}
+
+	issue, err := s.repo.FindByID(ctx, issueID)
+	if err != nil {
+		return nil, fmt.Errorf("find issue: %w", err)
+	}
+	if !issue.IsAccessibleBy(user) {
+		return nil, domain.ErrForbidden
+	}
+
+	return issue, nil
+}
+
+// EditIssue implements IM-4: Edit issue.
+func (s *IssueService) EditIssue(ctx context.Context, issueID string, changes AttributeData, user *domain.User) (*domain.Issue, error) {
+	if user == nil {
+		return nil, domain.ErrUnauthorized
+	}
+	// user.hasPermission(EDIT_ISSUE) -> role.hasPermission(EDIT_ISSUE)
+	if !user.HasPermission(domain.EditIssue) {
+		return nil, domain.ErrForbidden
+	}
+
+	issue, err := s.repo.FindByID(ctx, issueID)
+	if err != nil {
+		return nil, fmt.Errorf("find issue: %w", err)
+	}
+	if !issue.IsAccessibleBy(user) {
+		return nil, domain.ErrForbidden
+	}
+	if v := strings.TrimSpace(changes.Version); v != "" && v != issue.Version {
+		return nil, domain.ErrConflict
+	}
+
+	return s.applyAttributes(ctx, issue, changes)
+}
+
+func (s *IssueService) applyAttributes(ctx context.Context, issue *domain.Issue, attr AttributeData) (*domain.Issue, error) {
 	problems := map[string]string{}
 	var (
 		issueType *domain.IssueType
 		priority  *domain.Priority
 		assignee  *domain.User
+		err       error
 	)
 	if id := strings.TrimSpace(attr.TypeID); id == "" {
 		problems["typeId"] = "is required"
