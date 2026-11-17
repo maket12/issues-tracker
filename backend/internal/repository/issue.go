@@ -10,12 +10,12 @@ import (
 	"github.com/maket12/issues-tracker/backend/internal/domain"
 )
 
-type IssueRepo struct{ 
-	db *sqlx.DB 
+type IssueRepo struct {
+	db *sqlx.DB
 }
 
-func NewIssueRepo(db *sqlx.DB) *IssueRepo { 
-	return &IssueRepo{db: db} 
+func NewIssueRepo(db *sqlx.DB) *IssueRepo {
+	return &IssueRepo{db: db}
 }
 
 func (r *IssueRepo) FindByID(ctx context.Context, id string) (*domain.Issue, error) {
@@ -47,7 +47,7 @@ func (r *IssueRepo) FindPriorityByID(ctx context.Context, id string) (*domain.Pr
 }
 
 func (r *IssueRepo) FindUserByID(ctx context.Context, id string) (*domain.User, error) {
-	return findUser(ctx, r.db, id)
+	return findUser(ctx, r.db, "u.id = ?", id)
 }
 
 func (r *IssueRepo) FindInitialStatus(ctx context.Context) (*domain.Status, error) {
@@ -70,8 +70,8 @@ func (r *IssueRepo) Save(ctx context.Context, issue *domain.Issue) (*domain.Issu
 		return nil, err
 	}
 
-	defer func() { 
-		_ = tx.Rollback() 
+	defer func() {
+		_ = tx.Rollback()
 	}()
 
 	var id string
@@ -230,4 +230,19 @@ func findIssue(ctx context.Context, q sqlx.QueryerContext, id string) (*domain.I
 		issue.Assignee = &domain.User{ID: row.AssigneeID.String, Name: row.AssigneeName.String}
 	}
 	return issue, nil
+}
+
+func (r *IssueRepo) Delete(ctx context.Context, issue *domain.Issue) (bool, error) {
+	if issue == nil || issue.ID == "" {
+		return false, nil
+	}
+	res, err := r.db.ExecContext(ctx, "DELETE FROM Issue WHERE id = ?", issue.ID)
+	if err != nil {
+		return false, translate(err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
 }

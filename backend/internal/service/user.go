@@ -11,6 +11,12 @@ type UserRepository interface {
 	// ExistsByEmail expects an already normalised (trimmed, lower-case) e-mail.
 	ExistsByEmail(ctx context.Context, email string) (bool, error)
 
+	// FindByEmail returns the user with the given normalised e-mail, or domain.ErrNotFound.
+	FindByEmail(ctx context.Context, email string) (*domain.User, error)
+
+	// FindByID returns the user with the given id, or domain.ErrNotFound.
+	FindByID(ctx context.Context, id string) (*domain.User, error)
+
 	// Save stores a new user, assigns its id and returns it as stored.
 	// It returns domain.ErrEmailTaken when the e-mail is already registered (unique index),
 	// which can still happen when two registrations race.
