@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -57,27 +56,6 @@ const (
 	ConfigureLifecycle Permission = "CONFIGURE_LIFECYCLE"
 	ManageSprints      Permission = "MANAGE_SPRINTS"
 )
-
-type Role struct {
-	ID          string
-	Name        string
-	Permissions []Permission
-}
-
-func (r *Role) HasPermission(p Permission) bool {
-	return r != nil && slices.Contains(r.Permissions, p)
-}
-
-type User struct {
-	ID    string
-	Name  string
-	Email string
-	Role  *Role
-}
-
-func (u *User) HasPermission(p Permission) bool {
-	return u != nil && u.Role.HasPermission(p)
-}
 
 type IssueType struct {
 	ID          string
