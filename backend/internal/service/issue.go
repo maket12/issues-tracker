@@ -17,6 +17,7 @@ type IssueRepository interface {
 	FindUserByID(ctx context.Context, id string) (*domain.User, error)
 	FindInitialStatus(ctx context.Context) (*domain.Status, error)
 	Save(ctx context.Context, issue *domain.Issue) (*domain.Issue, error)
+	Delete(ctx context.Context, issue *domain.Issue) (bool, error)
 }
 
 type AttributeData struct {
@@ -32,11 +33,12 @@ type AttributeData struct {
 
 type IssueService struct {
 	repo IssueRepository
+	sprints SprintRepository
 	now  func() time.Time
 }
 
-func NewIssueService(repo IssueRepository) *IssueService {
-	return &IssueService{repo: repo, now: time.Now}
+func NewIssueService(repo IssueRepository, sprints SprintRepository) *IssueService {
+	return &IssueService{repo: repo, sprints: sprints, now: time.Now}
 }
 
 func (s *IssueService) CreateIssue(ctx context.Context, name, typeID string, description *string, author *domain.User) (*domain.Issue, error) {
@@ -137,6 +139,48 @@ func (s *IssueService) EditIssue(ctx context.Context, issueID string, changes At
 	}
 
 	return s.applyAttributes(ctx, issue, changes)
+}
+
+// DeleteIssue implements IM-5: deleteIssue(issueId, user). The returned bool is the confirmation.
+func (s *IssueService) DeleteIssue(ctx context.Context, issueID string, user *domain.User) (bool, error) {
+	if user == nil {
+		return false, domain.ErrUnauthorized
+	}
+	// user.hasPermission(DELETE_ISSUE) -> role.hasPermission(DELETE_ISSUE)
+	if !user.HasPermission(domain.DeleteIssue) {
+		return false, domain.ErrForbidden
+	}
+
+	// IssueRepository.findById(issueId) -> issue
+	issue, err := s.repo.FindByID(ctx, issueID)
+	if err != nil {
+		return false, fmt.Errorf("find issue: %w", err)
+	}
+
+	// SprintRepository.findByIssue(issue) -> sprint
+	sprint, err := s.sprints.FindByIssue(ctx, issue)
+	switch {
+	case errors.Is(err, domain.ErrNotFound):
+		// the issue belongs to no sprint: nothing to detach
+	case err != nil:
+		return false, fmt.Errorf("find sprint: %w", err)
+	case sprint != nil && sprint.Contains(issue):
+		// [issue belongs to a sprint]: sprint.removeIssue(issue), SprintRepository.save(sprint)
+		sprint.RemoveIssue(issue)
+		if _, err := s.sprints.Save(ctx, sprint); err != nil {
+			return false, fmt.Errorf("save sprint: %w", err)
+		}
+	}
+
+	// IssueRepository.delete(issue) -> deleted
+	deleted, err := s.repo.Delete(ctx, issue)
+	if err != nil {
+		return false, fmt.Errorf("delete issue: %w", err)
+	}
+	if !deleted { // somebody else removed it in the meantime
+		return false, domain.ErrNotFound
+	}
+	return true, nil
 }
 
 func (s *IssueService) applyAttributes(ctx context.Context, issue *domain.Issue, attr AttributeData) (*domain.Issue, error) {

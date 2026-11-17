@@ -1,12 +1,13 @@
 module github.com/maket12/issues-tracker/backend
 
-go 1.24.0
+go 1.26.0
 
 require (
 	github.com/go-chi/chi/v5 v5.5.0
 	github.com/go-sql-driver/mysql v1.10.1
 	github.com/jmoiron/sqlx v1.4.0
 	github.com/stretchr/testify v1.12.1
+	golang.org/x/crypto v0.59.0
 )
 
 require (

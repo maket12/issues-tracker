@@ -39,6 +39,14 @@ type env struct {
 	repo  *repository.IssueRepo
 }
 
+type noSprints struct{}
+
+func (noSprints) FindByIssue(context.Context, *domain.Issue) (*domain.Sprint, error) {
+	return nil, domain.ErrNotFound
+}
+
+func (noSprints) Save(_ context.Context, s *domain.Sprint) (*domain.Sprint, error) { return s, nil }
+
 func newEnv(t *testing.T) *env {
 	t.Helper()
 	rootDSN := os.Getenv("TEST_MYSQL_ROOT_DSN")
@@ -98,7 +106,7 @@ func newEnv(t *testing.T) *env {
 	require.NoError(t, err)
 
 	repo := repository.NewIssueRepo(appDB)
-	srv := httptest.NewServer(httpapi.NewRouter(service.NewIssueService(repo), testAuth(repository.NewUserRepo(admin))))
+	srv := httptest.NewServer(httpapi.NewRouter(service.NewIssueService(repo, noSprints{}), testAuth(repository.NewUserRepo(admin))))
 	t.Cleanup(func() { srv.Close(); appDB.Close(); admin.Close() })
 	return &env{srv: srv, admin: admin, repo: repo}
 }
