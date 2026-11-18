@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"unicode"
 
 	"golang.org/x/crypto/bcrypt"
@@ -34,13 +35,18 @@ func (h BcryptHasher) Hash(password string) (string, error) {
 
 // AuthService is the AuthService of the class diagram (only register so far; login/logout belong to MA-2).
 type AuthService struct {
-	users  UserRepository
-	roles  RoleRepository
-	hasher PasswordHasher
+	users    UserRepository
+	roles    RoleRepository
+	sessions SessionRepository
+	hasher   PasswordHasher
 }
 
-func NewAuthService(users UserRepository, roles RoleRepository, hasher PasswordHasher) *AuthService {
-	return &AuthService{users: users, roles: roles, hasher: hasher}
+func NewAuthService(users UserRepository, roles RoleRepository, hasher PasswordHasher, sessions ...SessionRepository) *AuthService {
+	var sess SessionRepository
+	if len(sessions) > 0 {
+		sess = sessions[0]
+	}
+	return &AuthService{users: users, roles: roles, sessions: sess, hasher: hasher}
 }
 
 // Register implements MA-1: register(name, email, password).
@@ -99,6 +105,59 @@ func (s *AuthService) Register(ctx context.Context, name, email, password string
 		return nil, fmt.Errorf("save user %q: %w", newUser.GetEmail(), err)
 	}
 	return registered, nil
+}
+
+// Login implements MA-2 (Log in): login(email, password).
+func (s *AuthService) Login(ctx context.Context, email, password string) (*domain.Session, error) {
+	email = strings.ToLower(strings.TrimSpace(email))
+	if email == "" || password == "" {
+		return nil, domain.ErrInvalidCredentials
+	}
+
+	// UserRepository.findByEmail(email) -> user
+	user, err := s.users.FindByEmail(ctx, email)
+	if errors.Is(err, domain.ErrNotFound) {
+		return nil, domain.ErrInvalidCredentials
+	}
+	if err != nil {
+		return nil, fmt.Errorf("find user by e-mail: %w", err)
+	}
+
+	// user.checkPasswd(password) -> true
+	if !user.CheckPasswd(password) {
+		return nil, domain.ErrInvalidCredentials
+	}
+
+	// user.getRole() -> role
+	role := user.GetRole()
+	// role.hasPermission(VIEW_ISSUE) -> true
+	if !role.HasPermission(domain.ViewIssue) {
+		return nil, domain.ErrForbidden
+	}
+
+	// SessionRepository.saveSession(user, role) -> activeSession
+	activeSession, err := s.sessions.SaveSession(ctx, user, role)
+	if err != nil {
+		return nil, fmt.Errorf("save session: %w", err)
+	}
+	return activeSession, nil
+}
+
+// Logout implements MA-2 (Log out): logout(user).
+func (s *AuthService) Logout(ctx context.Context, user *domain.User) (bool, error) {
+	if user == nil || strings.TrimSpace(user.GetID()) == "" {
+		return false, domain.ErrUnauthorized
+	}
+
+	// user.getId() -> userId
+	userID := user.GetID()
+
+	// SessionRepository.deleteByUserId(userId) -> sessionClosed
+	sessionClosed, err := s.sessions.DeleteByUserID(ctx, userID)
+	if err != nil {
+		return false, fmt.Errorf("delete session: %w", err)
+	}
+	return sessionClosed, nil
 }
 
 // strongPassword: 8-72 bytes (bcrypt ignores everything after 72), at least one letter and one digit.

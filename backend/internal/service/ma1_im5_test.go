@@ -99,12 +99,12 @@ func TestNewUser(t *testing.T) {
 	assert.Empty(t, u.ID, "the id is assigned on save")
 
 	for name, c := range map[string]struct{ name, email, field string }{
-		"blank name":             {"  ", "bob@example.com", "name"},
-		"name too long":          {strings.Repeat("я", 101), "bob@example.com", "name"},
-		"empty e-mail":           {"Bob", "", "email"},
-		"e-mail without @":       {"Bob", "bob.example.com", "email"},
+		"blank name":              {"  ", "bob@example.com", "name"},
+		"name too long":           {strings.Repeat("я", 101), "bob@example.com", "name"},
+		"empty e-mail":            {"Bob", "", "email"},
+		"e-mail without @":        {"Bob", "bob.example.com", "email"},
 		"e-mail with a name part": {"Bob", "Bob <bob@example.com>", "email"},
-		"e-mail too long":        {"Bob", strings.Repeat("a", 250) + "@example.com", "email"},
+		"e-mail too long":         {"Bob", strings.Repeat("a", 250) + "@example.com", "email"},
 	} {
 		_, err := domain.NewUser(c.name, c.email, "hash", role)
 		assert.Contains(t, fieldsOf(t, err), c.field, name)
@@ -138,7 +138,9 @@ func TestBcryptHasher(t *testing.T) {
 
 type callLog struct{ entries []string }
 
-func (c *callLog) add(format string, args ...any) { c.entries = append(c.entries, fmt.Sprintf(format, args...)) }
+func (c *callLog) add(format string, args ...any) {
+	c.entries = append(c.entries, fmt.Sprintf(format, args...))
+}
 
 var (
 	_ service.IssueRepository  = (*mockIssueRepo)(nil)
@@ -265,6 +267,21 @@ func (m *mockRoleRepo) FindDefaultRole(context.Context) (*domain.Role, error) {
 		return nil, domain.ErrNotFound
 	}
 	return m.role, nil
+}
+
+func (m *mockUserRepo) FindByEmail(_ context.Context, email string) (*domain.User, error) {
+	m.log.add("UNEXPECTED UserRepository.FindByEmail(%s)", email)
+	return nil, errors.New("unexpected call: FindByEmail")
+}
+
+func (m *mockUserRepo) FindByID(_ context.Context, id string) (*domain.User, error) {
+	m.log.add("UNEXPECTED UserRepository.FindByID(%s)", id)
+	return nil, errors.New("unexpected call: FindByID")
+}
+
+func (m *mockRoleRepo) FindByID(_ context.Context, id string) (*domain.Role, error) {
+	m.log.add("UNEXPECTED RoleRepository.FindByID(%s)", id)
+	return nil, errors.New("unexpected call: FindByID")
 }
 
 type stubHasher struct {

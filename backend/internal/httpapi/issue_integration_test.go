@@ -39,14 +39,6 @@ type env struct {
 	repo  *repository.IssueRepo
 }
 
-type noSprints struct{}
-
-func (noSprints) FindByIssue(context.Context, *domain.Issue) (*domain.Sprint, error) {
-	return nil, domain.ErrNotFound
-}
-
-func (noSprints) Save(_ context.Context, s *domain.Sprint) (*domain.Sprint, error) { return s, nil }
-
 func newEnv(t *testing.T) *env {
 	t.Helper()
 	rootDSN := os.Getenv("TEST_MYSQL_ROOT_DSN")
@@ -106,7 +98,8 @@ func newEnv(t *testing.T) *env {
 	require.NoError(t, err)
 
 	repo := repository.NewIssueRepo(appDB)
-	srv := httptest.NewServer(httpapi.NewRouter(service.NewIssueService(repo, noSprints{}), testAuth(repository.NewUserRepo(admin))))
+	sprintRepo := repository.NewSprintRepo(appDB)
+	srv := httptest.NewServer(httpapi.NewRouter(service.NewIssueService(repo, sprintRepo), testAuth(repository.NewUserRepo(admin))))
 	t.Cleanup(func() { srv.Close(); appDB.Close(); admin.Close() })
 	return &env{srv: srv, admin: admin, repo: repo}
 }
@@ -440,7 +433,7 @@ func TestFillAttributes_OptionalAttributesCanBeCleared(t *testing.T) {
 
 func TestFillAttributes_AuthorAndAssigneeHaveAccess_StrangersDoNot(t *testing.T) {
 	e := newEnv(t)
-	created := e.newIssue(t) // author alice
+	created := e.newIssue(t)                                            // author alice
 	status, raw := e.fillAttributes(t, "alice", created.ID, fillBody()) // assigns bob
 	require.Equal(t, http.StatusOK, status, string(raw))
 	current := decodeIssue(t, raw)
@@ -455,7 +448,7 @@ func TestFillAttributes_AuthorAndAssigneeHaveAccess_StrangersDoNot(t *testing.T)
 		status, _ = e.fillAttributes(t, user, created.ID, body)
 		assert.Equal(t, http.StatusForbidden, status, user)
 	}
-	
+
 	assert.Equal(t, "Edited by bob", e.text(t, "SELECT name FROM Issue WHERE id = ?", created.ID))
 	assert.NotEqual(t, current.Version, e.text(t, "SELECT version FROM Issue WHERE id = ?", created.ID))
 }
@@ -520,12 +513,12 @@ func TestFillAttributes_RejectsMalformedRequestsAndUneditableFields(t *testing.T
 	e := newEnv(t)
 	created := e.newIssue(t)
 	for name, body := range map[string]string{
-		"empty body":     ``,
-		"broken json":    `{"name": `,
-		"bad date":       `{"name":"x","typeId":"bug","priorityId":"low","startDate":"10/11/2026"}`,
-		"status field":   `{"name":"x","typeId":"bug","priorityId":"low","startDate":"2026-11-10","status":"done"}`,
-		"author field":   `{"name":"x","typeId":"bug","priorityId":"low","startDate":"2026-11-10","author":"bob"}`,
-		"wrong type":     `{"name":123,"typeId":"bug","priorityId":"low","startDate":"2026-11-10"}`,
+		"empty body":   ``,
+		"broken json":  `{"name": `,
+		"bad date":     `{"name":"x","typeId":"bug","priorityId":"low","startDate":"10/11/2026"}`,
+		"status field": `{"name":"x","typeId":"bug","priorityId":"low","startDate":"2026-11-10","status":"done"}`,
+		"author field": `{"name":"x","typeId":"bug","priorityId":"low","startDate":"2026-11-10","author":"bob"}`,
+		"wrong type":   `{"name":123,"typeId":"bug","priorityId":"low","startDate":"2026-11-10"}`,
 	} {
 		status, _ := e.fillAttributes(t, "alice", created.ID, body)
 		assert.Equal(t, http.StatusBadRequest, status, name)

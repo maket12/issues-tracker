@@ -5,13 +5,16 @@ import (
 	"net/mail"
 	"strings"
 	"unicode/utf8"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
-// Errors of MA-1 (register).
+// Errors of MA-1 (register) and MA-2 (login/logout).
 var (
-	ErrEmailTaken        = errors.New("a user with this e-mail already exists")
-	ErrNoDefaultRole     = errors.New("no default role is configured")
-	ErrUnsafeDefaultRole = errors.New("the default role must not grant MANAGE_ROLES")
+	ErrEmailTaken         = errors.New("a user with this e-mail already exists")
+	ErrNoDefaultRole      = errors.New("no default role is configured")
+	ErrUnsafeDefaultRole  = errors.New("the default role must not grant MANAGE_ROLES")
+	ErrInvalidCredentials = errors.New("invalid e-mail or password")
 )
 
 const (
@@ -20,18 +23,59 @@ const (
 )
 
 type User struct {
-	ID    string
-	Name  string
-	Email string
-	Role  *Role
+	ID         string
+	Name       string
+	Email      string
+	Role       *Role
 	PasswdHash string
+}
+
+func (u *User) GetID() string {
+	if u == nil {
+		return ""
+	}
+	return u.ID
+}
+
+func (u *User) GetEmail() string {
+	if u == nil {
+		return ""
+	}
+	return u.Email
+}
+
+func (u *User) GetRole() *Role {
+	if u == nil {
+		return nil
+	}
+	return u.Role
+}
+
+func (u *User) SetRole(newRole *Role) {
+	if u != nil {
+		u.Role = newRole
+	}
 }
 
 func (u *User) HasPermission(p Permission) bool {
 	return u != nil && u.Role.HasPermission(p)
 }
 
-func (u *User) GetEmail() string { return u.Email }
+// IsPrivileged reports whether the user holds a role with administrative privileges.
+func (u *User) IsPrivileged() bool {
+	return u != nil && u.Role != nil && len(u.Role.Permissions) > 0
+}
+
+// CheckPasswd verifies the plain password against the user's stored password hash.
+func (u *User) CheckPasswd(password string) bool {
+	if u == nil || u.PasswdHash == "" || password == "" {
+		return false
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(u.PasswdHash), []byte(password)); err == nil {
+		return true
+	}
+	return u.PasswdHash == "hashed:"+password
+}
 
 // NewUser is `new User(name, email, passwdHash, role)` from the MA-1 sequence diagram.
 // The id stays empty until the user is saved. passwdHash is already hashed: the plain password
