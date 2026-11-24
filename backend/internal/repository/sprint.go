@@ -17,6 +17,10 @@ func NewSprintRepo(db *sqlx.DB) *SprintRepo {
 	return &SprintRepo{db: db}
 }
 
+func (r *SprintRepo) FindByID(ctx context.Context, id string) (*domain.Sprint, error) {
+	return findSprint(ctx, r.db, id)
+}
+
 func (r *SprintRepo) FindByIssue(ctx context.Context, issue *domain.Issue) (*domain.Sprint, error) {
 	if issue == nil || issue.ID == "" {
 		return nil, domain.ErrNotFound
@@ -57,8 +61,8 @@ func (r *SprintRepo) Save(ctx context.Context, sprint *domain.Sprint) (*domain.S
 			return nil, err
 		}
 		res, err := tx.ExecContext(ctx,
-			"INSERT INTO Sprints (id, `start`, `end`, closed) VALUES (?, ?, ?, ?)",
-			tempID, sprint.StartDate(), endDate, closedBit)
+			"INSERT INTO Sprints (id, name, `start`, `end`, closed) VALUES (?, ?, ?, ?, ?)",
+			tempID, sprint.Name(), sprint.StartDate(), endDate, closedBit)
 		if err != nil {
 			return nil, translate(err)
 		}
@@ -75,8 +79,8 @@ func (r *SprintRepo) Save(ctx context.Context, sprint *domain.Sprint) (*domain.S
 			return nil, translate(err)
 		}
 		if _, err := tx.ExecContext(ctx,
-			"UPDATE Sprints SET `start` = ?, `end` = ?, closed = ? WHERE `key` = ?",
-			sprint.StartDate(), endDate, closedBit, sprintKey); err != nil {
+			"UPDATE Sprints SET name = ?, `start` = ?, `end` = ?, closed = ? WHERE `key` = ?",
+			sprint.Name(), sprint.StartDate(), endDate, closedBit, sprintKey); err != nil {
 			return nil, translate(err)
 		}
 	}
@@ -109,11 +113,12 @@ func findSprint(ctx context.Context, q sqlx.QueryerContext, id string) (*domain.
 	var row struct {
 		Key    int64       `db:"key"`
 		ID     string      `db:"id"`
+		Name   string      `db:"name"`
 		Start  domain.Date `db:"start"`
 		End    domain.Date `db:"end"`
 		Closed []byte      `db:"closed"`
 	}
-	if err := sqlx.GetContext(ctx, q, &row, "SELECT `key`, id, `start`, `end`, closed FROM Sprints WHERE id = ?", id); err != nil {
+	if err := sqlx.GetContext(ctx, q, &row, "SELECT `key`, id, name, `start`, `end`, closed FROM Sprints WHERE id = ?", id); err != nil {
 		return nil, translate(err)
 	}
 
@@ -133,7 +138,11 @@ func findSprint(ctx context.Context, q sqlx.QueryerContext, id string) (*domain.
 		issues = append(issues, iss)
 	}
 
+	name := row.Name
+	if name == "" {
+		name = row.ID
+	}
 	closed := len(row.Closed) > 0 && row.Closed[0] != 0
 	endCopy := row.End
-	return domain.RestoreSprint(row.ID, row.ID, row.Start, &endCopy, closed, issues), nil
+	return domain.RestoreSprint(row.ID, name, row.Start, &endCopy, closed, issues), nil
 }

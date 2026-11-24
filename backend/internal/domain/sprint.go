@@ -2,7 +2,8 @@ package domain
 
 import (
 	"slices"
-	"time"
+	"strings"
+	"unicode/utf8"
 )
 
 // Sprint is the Sprint class of the class diagram.
@@ -15,17 +16,40 @@ type Sprint struct {
 	closed    bool
 }
 
-// NewSprint creates an open sprint without issues. A zero startDate means "today" (UTC, taken from now).
-func NewSprint(name string, startDate Date, now time.Time) *Sprint {
-	if startDate.IsZero() {
-		n := now.UTC()
-		startDate = Date{Time: time.Date(n.Year(), n.Month(), n.Day(), 0, 0, 0, 0, time.UTC)}
+const MaxSprintNameLength = 100
+
+// NewSprint validates and creates a new open sprint (WO-1: new Sprint(name, startDate, endDate)).
+func NewSprint(name string, startDate, endDate Date) (*Sprint, error) {
+	problems := map[string]string{}
+
+	name = strings.TrimSpace(name)
+	switch n := utf8.RuneCountInString(name); {
+	case n == 0:
+		problems["name"] = "is required"
+	case n > MaxSprintNameLength:
+		problems["name"] = "must be at most 100 characters"
 	}
+
+	if startDate.IsZero() {
+		problems["startDate"] = "is required"
+	}
+	if endDate.IsZero() {
+		problems["endDate"] = "is required"
+	} else if !startDate.IsZero() && endDate.Before(startDate.Time) {
+		problems["endDate"] = "must not be earlier than startDate"
+	}
+
+	if len(problems) > 0 {
+		return nil, &ValidationError{Fields: problems}
+	}
+
+	endCopy := endDate
 	return &Sprint{
 		name:      name,
 		startDate: startDate,
+		EndDate:   &endCopy,
 		issues:    make([]*Issue, 0),
-	}
+	}, nil
 }
 
 // RestoreSprint rebuilds a stored sprint; SprintRepository implementations use it.
@@ -40,10 +64,10 @@ func RestoreSprint(id, name string, startDate Date, endDate *Date, closed bool, 
 	}
 }
 
-func (s *Sprint) Name() string     { return s.name }
-func (s *Sprint) StartDate() Date  { return s.startDate }
-func (s *Sprint) IsClosed() bool   { return s.closed }
-func (s *Sprint) Close()           { s.closed = true }
+func (s *Sprint) Name() string    { return s.name }
+func (s *Sprint) StartDate() Date { return s.startDate }
+func (s *Sprint) IsClosed() bool  { return s.closed }
+func (s *Sprint) Close()          { s.closed = true }
 
 // GetIssues returns a copy, so callers cannot change the sprint through the slice.
 func (s *Sprint) GetIssues() []*Issue {

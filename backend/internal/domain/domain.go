@@ -21,6 +21,9 @@ var (
 	ErrStatusExists         = errors.New("a status with this name already exists")
 	ErrTransitionExists     = errors.New("this transition already exists")
 	ErrTransitionNotAllowed = errors.New("this status transition is not allowed")
+
+	ErrSprintClosed         = errors.New("sprint is closed")
+	ErrIssueAlreadyInSprint = errors.New("issue is already in this sprint")
 )
 
 type ValidationError struct {
@@ -77,6 +80,13 @@ type Priority struct {
 	ID          string
 	Name        string
 	Description *string
+}
+
+func (p *Priority) GetName() string {
+	if p == nil {
+		return ""
+	}
+	return p.Name
 }
 
 type Status struct {

@@ -73,6 +73,22 @@ func (s *LifecycleService) DefineStatus(ctx context.Context, statusName string, 
 	return savedStatus, nil
 }
 
+// VerifyTransition implements LC-5: checkTransition(issue, user, targetStatus).
+func (s *LifecycleService) VerifyTransition(ctx context.Context, issue *domain.Issue, user *domain.User, targetStatus *domain.Status) (bool, error) {
+	if issue == nil {
+		return false, domain.NewValidation("issue", "is required")
+	}
+	if targetStatus == nil {
+		return false, domain.NewValidation("targetStatus", "is required")
+	}
+
+	lifecycle, err := s.lifecycles.GetLifecycle(ctx)
+	if err != nil {
+		return false, fmt.Errorf("get lifecycle: %w", err)
+	}
+	return lifecycle.CheckTransition(issue, user, targetStatus)
+}
+
 // DefineTransition implements LC-2: defineTransition(fromId, toId, user).
 func (s *LifecycleService) DefineTransition(ctx context.Context, fromID, toID string, user *domain.User) (*domain.TransitionRule, error) {
 	if err := requireLifecycleRights(user); err != nil {

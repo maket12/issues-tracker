@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/jmoiron/sqlx"
 
@@ -255,4 +256,62 @@ func (r *IssueRepo) Delete(ctx context.Context, issue *domain.Issue) (bool, erro
 		return false, err
 	}
 	return n > 0, nil
+}
+
+func (r *IssueRepo) FindAll(ctx context.Context) ([]*domain.Issue, error) {
+	var rows []issueRow
+	if err := r.db.SelectContext(ctx, &rows, issueSelect+"ORDER BY i.`key`"); err != nil {
+		return nil, translate(err)
+	}
+	return rowsToIssues(rows), nil
+}
+
+func (r *IssueRepo) FindAllSorted(ctx context.Context, attribute, direction string) ([]*domain.Issue, error) {
+	dir := "ASC"
+	if strings.EqualFold(strings.TrimSpace(direction), "desc") {
+		dir = "DESC"
+	}
+
+	var orderBy string
+	switch strings.ToLower(strings.TrimSpace(attribute)) {
+	case "priority":
+		orderBy = "p.`key` " + dir + ", i.`key` ASC"
+	case "startdate":
+		orderBy = "i.startDate " + dir + ", i.`key` ASC"
+	case "duedate":
+		orderBy = "i.dueDate IS NULL ASC, i.dueDate " + dir + ", i.`key` ASC"
+	case "name":
+		orderBy = "i.name " + dir + ", i.`key` ASC"
+	default:
+		return nil, domain.NewValidation("attribute", "must be one of: priority, startDate, dueDate, name")
+	}
+
+	var rows []issueRow
+	if err := r.db.SelectContext(ctx, &rows, issueSelect+"ORDER BY "+orderBy); err != nil {
+		return nil, translate(err)
+	}
+	return rowsToIssues(rows), nil
+}
+
+func rowsToIssues(rows []issueRow) []*domain.Issue {
+	issues := make([]*domain.Issue, 0, len(rows))
+	for _, row := range rows {
+		issue := &domain.Issue{
+			ID:          row.ID,
+			Name:        row.Name,
+			Description: nullable(row.Description),
+			Type:        &domain.IssueType{ID: row.TypeID, Name: row.TypeName, Description: nullable(row.TypeDescription)},
+			Priority:    &domain.Priority{ID: row.PriorityID, Name: row.PriorityName, Description: nullable(row.PriorityDescription)},
+			Status:      &domain.Status{ID: row.StatusID, Name: row.StatusName},
+			Author:      &domain.User{ID: row.AuthorID, Name: row.AuthorName},
+			StartDate:   row.StartDate,
+			DueDate:     row.DueDate,
+			Version:     row.Version,
+		}
+		if row.AssigneeID.Valid {
+			issue.Assignee = &domain.User{ID: row.AssigneeID.String, Name: row.AssigneeName.String}
+		}
+		issues = append(issues, issue)
+	}
+	return issues
 }

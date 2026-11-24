@@ -73,18 +73,22 @@ func TestSprint_GetIssuesReturnsACopy(t *testing.T) {
 	assert.True(t, sprint.Contains(i1))
 }
 
-func TestNewSprint_StartDate(t *testing.T) {
-	// 01:30 on 10 Nov in UTC+3 is still 9 Nov in UTC
-	now := time.Date(2026, 11, 10, 1, 30, 0, 0, time.FixedZone("UTC+3", 3*3600))
-
-	assert.Equal(t, "2026-11-09", domain.NewSprint("S", domain.Date{}, now).StartDate().Format("2006-01-02"), "zero start date means today (UTC)")
-	assert.Equal(t, "2026-12-01", domain.NewSprint("S", day("2026-12-01"), now).StartDate().Format("2006-01-02"), "an explicit start date is kept")
-
-	s := domain.NewSprint("S", day("2026-12-01"), now)
-	assert.Equal(t, "S", s.Name())
+func TestNewSprint(t *testing.T) {
+	s, err := domain.NewSprint("  Sprint 1 ", day("2026-12-01"), day("2026-12-14"))
+	require.NoError(t, err)
+	assert.Equal(t, "Sprint 1", s.Name())
+	assert.Equal(t, "2026-12-01", s.StartDate().Format("2006-01-02"))
+	require.NotNil(t, s.EndDate)
+	assert.Equal(t, "2026-12-14", s.EndDate.Format("2006-01-02"))
 	assert.False(t, s.IsClosed())
 	s.Close()
 	assert.True(t, s.IsClosed())
+
+	_, err = domain.NewSprint("   ", day("2026-12-01"), day("2026-12-14"))
+	assert.Contains(t, fieldsOf(t, err), "name")
+
+	_, err = domain.NewSprint("S", day("2026-12-14"), day("2026-12-01"))
+	assert.Contains(t, fieldsOf(t, err), "endDate")
 }
 
 func TestNewUser(t *testing.T) {
@@ -180,23 +184,37 @@ func (m *mockIssueRepo) unexpected(name string) error {
 	m.log.add("UNEXPECTED IssueRepository.%s", name)
 	return errors.New("unexpected call: " + name)
 }
+
 func (m *mockIssueRepo) FindTypeByID(context.Context, string) (*domain.IssueType, error) {
 	return nil, m.unexpected("FindTypeByID")
 }
+
 func (m *mockIssueRepo) FindPriorityByID(context.Context, string) (*domain.Priority, error) {
 	return nil, m.unexpected("FindPriorityByID")
 }
+
 func (m *mockIssueRepo) FindUserByID(context.Context, string) (*domain.User, error) {
 	return nil, m.unexpected("FindUserByID")
 }
+
 func (m *mockIssueRepo) FindInitialStatus(context.Context) (*domain.Status, error) {
 	return nil, m.unexpected("FindInitialStatus")
 }
+
 func (m *mockIssueRepo) FindStatusByID(context.Context, string) (*domain.Status, error) {
 	return nil, m.unexpected("FindStatusByID")
 }
+
 func (m *mockIssueRepo) Save(context.Context, *domain.Issue) (*domain.Issue, error) {
 	return nil, m.unexpected("Save")
+}
+
+func (m *mockIssueRepo) FindAll(context.Context) ([]*domain.Issue, error) {
+	return nil, m.unexpected("FindAll")
+}
+
+func (m *mockIssueRepo) FindAllSorted(context.Context, string, string) ([]*domain.Issue, error) {
+	return nil, m.unexpected("FindAllSorted")
 }
 
 // ---- SprintRepository
@@ -227,6 +245,17 @@ func (m *mockSprintRepo) Save(_ context.Context, s *domain.Sprint) (*domain.Spri
 	}
 	m.saved = s
 	return s, nil
+}
+
+func (m *mockSprintRepo) FindByID(_ context.Context, id string) (*domain.Sprint, error) {
+	m.log.add("SprintRepository.FindByID(%s)", id)
+	if m.findErr != nil {
+		return nil, m.findErr
+	}
+	if m.sprint == nil {
+		return nil, domain.ErrNotFound
+	}
+	return m.sprint, nil
 }
 
 // ---- UserRepository, RoleRepository, PasswordHasher

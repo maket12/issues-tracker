@@ -31,6 +31,10 @@ func (noLifecycle) Save(_ context.Context, l *domain.Lifecycle) (*domain.Lifecyc
 	return l, nil
 }
 
+func (noSprints) FindByID(context.Context, string) (*domain.Sprint, error) {
+	return nil, domain.ErrNotFound
+}
+
 type fakeRepo struct {
 	types      map[string]*domain.IssueType
 	priorities map[string]*domain.Priority
@@ -114,6 +118,19 @@ func (f *fakeRepo) Delete(_ context.Context, issue *domain.Issue) (bool, error) 
 	_, existed := f.issues[issue.ID]
 	delete(f.issues, issue.ID)
 	return existed, nil
+}
+
+func (f *fakeRepo) FindAll(context.Context) ([]*domain.Issue, error) {
+	out := make([]*domain.Issue, 0, len(f.issues))
+	for _, i := range f.issues {
+		c := *i
+		out = append(out, &c)
+	}
+	return out, nil
+}
+
+func (f *fakeRepo) FindAllSorted(ctx context.Context, _, _ string) ([]*domain.Issue, error) {
+	return f.FindAll(ctx)
 }
 
 func ptr[T any](v T) *T { return &v }
