@@ -13,7 +13,6 @@ import (
 	"github.com/maket12/issues-tracker/backend/internal/domain"
 )
 
-
 type noSprints struct{}
 
 func (noSprints) FindByIssue(context.Context, *domain.Issue) (*domain.Sprint, error) {
@@ -21,6 +20,16 @@ func (noSprints) FindByIssue(context.Context, *domain.Issue) (*domain.Sprint, er
 }
 
 func (noSprints) Save(_ context.Context, s *domain.Sprint) (*domain.Sprint, error) { return s, nil }
+
+// noLifecycle is the empty status graph: the tests in this file never change an issue's status.
+type noLifecycle struct{}
+
+func (noLifecycle) GetLifecycle(context.Context) (*domain.Lifecycle, error) {
+	return domain.NewLifecycle(), nil
+}
+func (noLifecycle) Save(_ context.Context, l *domain.Lifecycle) (*domain.Lifecycle, error) {
+	return l, nil
+}
 
 type fakeRepo struct {
 	types      map[string]*domain.IssueType
@@ -84,6 +93,10 @@ func (f *fakeRepo) FindInitialStatus(context.Context) (*domain.Status, error) {
 	return f.initial, nil
 }
 
+func (f *fakeRepo) FindStatusByID(context.Context, string) (*domain.Status, error) {
+	return nil, domain.ErrNotFound // statuses are not needed by these tests
+}
+
 func (f *fakeRepo) Save(_ context.Context, issue *domain.Issue) (*domain.Issue, error) {
 	f.saves++
 	f.saved = issue
@@ -130,7 +143,7 @@ func fieldsOf(t *testing.T, err error) map[string]string {
 
 func TestCreateIssue_PermissionIsCheckedFirst(t *testing.T) {
 	repo := newFakeRepo()
-	svc := NewIssueService(repo, noSprints{})
+	svc := NewIssueService(repo, noSprints{}, noLifecycle{})
 
 	_, err := svc.CreateIssue(context.Background(), "x", "bug", nil, nil)
 	assert.ErrorIs(t, err, domain.ErrUnauthorized)
@@ -145,7 +158,7 @@ func TestCreateIssue_PermissionIsCheckedFirst(t *testing.T) {
 
 func TestCreateIssue_FollowsTheSequenceDiagram(t *testing.T) {
 	repo := newFakeRepo()
-	svc := NewIssueService(repo, noSprints{})
+	svc := NewIssueService(repo, noSprints{}, noLifecycle{})
 	// 01:30 on 10 Nov in UTC+3 is still 9 Nov in UTC
 	svc.now = func() time.Time { return time.Date(2026, 11, 10, 1, 30, 0, 0, time.FixedZone("UTC+3", 3*3600)) }
 	author := member()
@@ -180,7 +193,7 @@ func TestCreateIssue_RejectsInvalidInput(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			repo := newFakeRepo()
-			_, err := NewIssueService(repo, noSprints{}).CreateIssue(context.Background(), tc.issueName, tc.typeID, tc.description, member())
+			_, err := NewIssueService(repo, noSprints{}, noLifecycle{}).CreateIssue(context.Background(), tc.issueName, tc.typeID, tc.description, member())
 			assert.Contains(t, fieldsOf(t, err), tc.field)
 			assert.Zero(t, repo.saves, "an invalid issue is never saved")
 		})
@@ -190,7 +203,7 @@ func TestCreateIssue_RejectsInvalidInput(t *testing.T) {
 func TestCreateIssue_NoInitialStatusConfigured(t *testing.T) {
 	repo := newFakeRepo()
 	repo.initial = nil
-	_, err := NewIssueService(repo, noSprints{}).CreateIssue(context.Background(), "Fix", "bug", nil, member())
+	_, err := NewIssueService(repo, noSprints{}, noLifecycle{}).CreateIssue(context.Background(), "Fix", "bug", nil, member())
 	assert.ErrorIs(t, err, domain.ErrNoInitialStatus)
 	assert.Zero(t, repo.saves)
 }
@@ -199,7 +212,7 @@ func TestCreateIssue_RepositoryFailureIsReturned(t *testing.T) {
 	boom := errors.New("connection refused")
 	repo := newFakeRepo()
 	repo.saveErr = boom
-	_, err := NewIssueService(repo, noSprints{}).CreateIssue(context.Background(), "Fix", "bug", nil, member())
+	_, err := NewIssueService(repo, noSprints{}, noLifecycle{}).CreateIssue(context.Background(), "Fix", "bug", nil, member())
 	assert.ErrorIs(t, err, boom)
 }
 
@@ -223,7 +236,7 @@ func TestFillAttributes_AccessRules(t *testing.T) {
 	issue := existingIssue()
 	issue.Assignee = &domain.User{ID: "bob"}
 	repo.issues["ISS-1"] = issue
-	svc := NewIssueService(repo, noSprints{})
+	svc := NewIssueService(repo, noSprints{}, noLifecycle{})
 	ctx := context.Background()
 
 	_, err := svc.FillAttributes(ctx, "ISS-1", validAttrs(), nil)
@@ -247,7 +260,7 @@ func TestFillAttributes_ChangesAttributesButNotAuthorOrStatus(t *testing.T) {
 	repo := newFakeRepo()
 	repo.issues["ISS-1"] = existingIssue()
 
-	updated, err := NewIssueService(repo, noSprints{}).FillAttributes(context.Background(), "ISS-1", validAttrs(), member())
+	updated, err := NewIssueService(repo, noSprints{}, noLifecycle{}).FillAttributes(context.Background(), "ISS-1", validAttrs(), member())
 	require.NoError(t, err)
 
 	assert.Equal(t, "ISS-1", updated.ID)
@@ -265,7 +278,7 @@ func TestFillAttributes_ReportsEveryProblemAtOnce(t *testing.T) {
 	attrs := validAttrs()
 	attrs.TypeID, attrs.PriorityID, attrs.AssigneeID = "epic", "urgent", ptr("nobody")
 
-	_, err := NewIssueService(repo, noSprints{}).FillAttributes(context.Background(), "ISS-1", attrs, member())
+	_, err := NewIssueService(repo, noSprints{}, noLifecycle{}).FillAttributes(context.Background(), "ISS-1", attrs, member())
 	fields := fieldsOf(t, err)
 	for _, f := range []string{"typeId", "priorityId", "assigneeId"} {
 		assert.Contains(t, fields, f)
@@ -296,7 +309,7 @@ func TestFillAttributes_RequiredAndOptionalAttributes(t *testing.T) {
 			attrs := validAttrs()
 			tc.mutate(&attrs)
 
-			_, err := NewIssueService(repo, noSprints{}).FillAttributes(context.Background(), "ISS-1", attrs, member())
+			_, err := NewIssueService(repo, noSprints{}, noLifecycle{}).FillAttributes(context.Background(), "ISS-1", attrs, member())
 			if tc.field == "" {
 				require.NoError(t, err)
 				if attrs.AssigneeID == nil || strings.TrimSpace(*attrs.AssigneeID) == "" {
@@ -315,7 +328,7 @@ func TestFillAttributes_ConcurrentModificationIsReported(t *testing.T) {
 	repo.issues["ISS-1"] = existingIssue()
 	repo.saveErr = domain.ErrConflict
 
-	_, err := NewIssueService(repo, noSprints{}).FillAttributes(context.Background(), "ISS-1", validAttrs(), member())
+	_, err := NewIssueService(repo, noSprints{}, noLifecycle{}).FillAttributes(context.Background(), "ISS-1", validAttrs(), member())
 	assert.ErrorIs(t, err, domain.ErrConflict)
 }
 
@@ -326,7 +339,7 @@ func TestViewIssue_AccessAndPermissionRules(t *testing.T) {
 	issue := existingIssue()
 	issue.Assignee = &domain.User{ID: "bob", Name: "Bob"}
 	repo.issues["ISS-1"] = issue
-	svc := NewIssueService(repo, noSprints{})
+	svc := NewIssueService(repo, noSprints{}, noLifecycle{})
 	ctx := context.Background()
 
 	_, err := svc.ViewIssue(ctx, "ISS-1", nil)
@@ -364,43 +377,40 @@ func TestEditIssue_AccessAndPermissionRules(t *testing.T) {
 	issue := existingIssue()
 	issue.Assignee = &domain.User{ID: "bob", Name: "Bob"}
 	repo.issues["ISS-1"] = issue
-	svc := NewIssueService(repo, noSprints{})
+	svc := NewIssueService(repo, noSprints{}, noLifecycle{})
 	ctx := context.Background()
 
-	_, err := svc.EditIssue(ctx, "ISS-1", validAttrs(), nil)
+	_, err := svc.EditIssue(ctx, "ISS-1", validAttrs(), "v1", nil)
 	assert.ErrorIs(t, err, domain.ErrUnauthorized)
 
 	// User without EDIT_ISSUE permission is rejected before any lookup
-	_, err = svc.EditIssue(ctx, "ISS-1", validAttrs(), userWith("alice", domain.ViewIssue))
+	_, err = svc.EditIssue(ctx, "ISS-1", validAttrs(), "v1", userWith("alice", domain.ViewIssue))
 	assert.ErrorIs(t, err, domain.ErrForbidden)
 	assert.Zero(t, repo.lookups, "nothing is looked up when EDIT_ISSUE permission is missing")
 	assert.Zero(t, repo.saves)
 
-	_, err = svc.EditIssue(ctx, "ISS-404", validAttrs(), userWith("alice", domain.EditIssue))
+	_, err = svc.EditIssue(ctx, "ISS-404", validAttrs(), "v1", userWith("alice", domain.EditIssue))
 	assert.ErrorIs(t, err, domain.ErrNotFound)
 
 	// Stranger with EDIT_ISSUE permission cannot edit someone else's issue
-	_, err = svc.EditIssue(ctx, "ISS-1", validAttrs(), userWith("carol", domain.EditIssue))
+	_, err = svc.EditIssue(ctx, "ISS-1", validAttrs(), "v1", userWith("carol", domain.EditIssue))
 	assert.ErrorIs(t, err, domain.ErrForbidden)
 	assert.Zero(t, repo.lookups)
 	assert.Zero(t, repo.saves)
 
 	// Author and Assignee with EDIT_ISSUE permission can edit
-	_, err = svc.EditIssue(ctx, "ISS-1", validAttrs(), userWith("alice", domain.EditIssue))
+	_, err = svc.EditIssue(ctx, "ISS-1", validAttrs(), "v1", userWith("alice", domain.EditIssue))
 	assert.NoError(t, err)
-	_, err = svc.EditIssue(ctx, "ISS-1", validAttrs(), userWith("bob", domain.EditIssue))
+	_, err = svc.EditIssue(ctx, "ISS-1", validAttrs(), "v1", userWith("bob", domain.EditIssue))
 	assert.NoError(t, err)
 }
 
 func TestEditIssue_FollowsTheSequenceDiagram(t *testing.T) {
 	repo := newFakeRepo()
 	repo.issues["ISS-1"] = existingIssue()
-	svc := NewIssueService(repo, noSprints{})
+	svc := NewIssueService(repo, noSprints{}, noLifecycle{})
 
-	changes := validAttrs()
-	changes.Version = "v1"
-
-	updated, err := svc.EditIssue(context.Background(), "ISS-1", changes, userWith("alice", domain.EditIssue))
+	updated, err := svc.EditIssue(context.Background(), "ISS-1", validAttrs(), "v1", userWith("alice", domain.EditIssue))
 	require.NoError(t, err)
 
 	assert.Equal(t, "ISS-1", updated.ID)
@@ -415,35 +425,30 @@ func TestEditIssue_FollowsTheSequenceDiagram(t *testing.T) {
 func TestEditIssue_DetectsVersionConflictBeforeLookupAndOnSave(t *testing.T) {
 	repo := newFakeRepo()
 	repo.issues["ISS-1"] = existingIssue() // version is "v1"
-	svc := NewIssueService(repo, noSprints{})
+	svc := NewIssueService(repo, noSprints{}, noLifecycle{})
 
-	stale := validAttrs()
-	stale.Version = "stale-version"
-
-	_, err := svc.EditIssue(context.Background(), "ISS-1", stale, userWith("alice", domain.EditIssue))
+	_, err := svc.EditIssue(context.Background(), "ISS-1", validAttrs(), "stale-version", userWith("alice", domain.EditIssue))
 	assert.ErrorIs(t, err, domain.ErrConflict)
 	assert.Zero(t, repo.lookups, "version mismatch is caught before looking up attributes")
 	assert.Zero(t, repo.saves)
 
 	// Conflict on repository save
 	repo.saveErr = domain.ErrConflict
-	matching := validAttrs()
-	matching.Version = "v1"
-	_, err = svc.EditIssue(context.Background(), "ISS-1", matching, userWith("alice", domain.EditIssue))
+	_, err = svc.EditIssue(context.Background(), "ISS-1", validAttrs(), "v1", userWith("alice", domain.EditIssue))
 	assert.ErrorIs(t, err, domain.ErrConflict)
 }
 
 func TestEditIssue_ValidatesAttributes(t *testing.T) {
 	repo := newFakeRepo()
 	repo.issues["ISS-1"] = existingIssue()
-	svc := NewIssueService(repo, noSprints{})
+	svc := NewIssueService(repo, noSprints{}, noLifecycle{})
 
 	bad := validAttrs()
 	bad.Name = "   "
 	bad.PriorityID = "high"
 	bad.DueDate = date("2026-11-01") // earlier than StartDate 2026-11-10
 
-	_, err := svc.EditIssue(context.Background(), "ISS-1", bad, userWith("alice", domain.EditIssue))
+	_, err := svc.EditIssue(context.Background(), "ISS-1", bad, "v1", userWith("alice", domain.EditIssue))
 	fields := fieldsOf(t, err)
 	assert.Contains(t, fields, "name")
 	assert.Contains(t, fields, "dueDate")
@@ -451,6 +456,6 @@ func TestEditIssue_ValidatesAttributes(t *testing.T) {
 
 	badPriority := validAttrs()
 	badPriority.PriorityID = "unknown"
-	_, err = svc.EditIssue(context.Background(), "ISS-1", badPriority, userWith("alice", domain.EditIssue))
+	_, err = svc.EditIssue(context.Background(), "ISS-1", badPriority, "v1", userWith("alice", domain.EditIssue))
 	assert.Contains(t, fieldsOf(t, err), "priorityId")
 }

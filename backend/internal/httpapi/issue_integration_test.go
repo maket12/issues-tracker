@@ -79,7 +79,8 @@ func newEnv(t *testing.T) *env {
 	admin.MustExec("GRANT SELECT, INSERT, UPDATE, DELETE ON " + testDB + ".* TO '" + testAppUser + "'@'%'")
 
 	seed := []string{
-		"INSERT INTO Roles (id, name) VALUES ('member','Member'), ('viewer','Viewer')",
+		"INSERT INTO Roles (id, name) VALUES ('member','Member'), ('viewer','Viewer'), ('admin','Admin'), ('qa','QA')",
+		"INSERT INTO RolesPermissions (role, permission) SELECT `key`, 'CONFIGURE_LIFECYCLE' FROM Roles WHERE id = 'admin'",
 		"INSERT INTO RolesPermissions (role, permission) SELECT `key`, 'CREATE_ISSUE' FROM Roles WHERE id = 'member'",
 		"INSERT INTO RolesPermissions (role, permission) SELECT `key`, 'VIEW_ISSUE' FROM Roles WHERE id = 'member'",
 		"INSERT INTO RolesPermissions (role, permission) SELECT `key`, 'EDIT_ISSUE' FROM Roles WHERE id = 'member'",
@@ -87,6 +88,7 @@ func newEnv(t *testing.T) *env {
 		"INSERT INTO Priorities (id, name) VALUES ('low','Low'), ('high','High')",
 		"INSERT INTO Statuses (id, name) VALUES ('open','Open'), ('done','Done')",
 		userSQL("alice", "member"), userSQL("bob", "member"), userSQL("carol", "member"), userSQL("vera", "viewer"),
+		userSQL("dana", "admin"), userSQL("quinn", "qa"),
 	}
 	for _, s := range seed {
 		admin.MustExec(s)
@@ -99,7 +101,13 @@ func newEnv(t *testing.T) *env {
 
 	repo := repository.NewIssueRepo(appDB)
 	sprintRepo := repository.NewSprintRepo(appDB)
-	srv := httptest.NewServer(httpapi.NewRouter(service.NewIssueService(repo, sprintRepo), testAuth(repository.NewUserRepo(admin))))
+	lifecycleRepo := repository.NewLifecycleRepo(appDB)
+	lifecycleSvc := service.NewLifecycleService(lifecycleRepo, repository.NewStatusRepo(appDB), repository.NewRoleRepo(appDB))
+	srv := httptest.NewServer(httpapi.NewRouter(
+		service.NewIssueService(repo, sprintRepo, lifecycleRepo),
+		testAuth(repository.NewUserRepo(admin)),
+		httpapi.WithLifecycle(lifecycleSvc),
+	))
 	t.Cleanup(func() { srv.Close(); appDB.Close(); admin.Close() })
 	return &env{srv: srv, admin: admin, repo: repo}
 }

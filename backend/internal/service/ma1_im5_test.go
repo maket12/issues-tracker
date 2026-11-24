@@ -192,6 +192,9 @@ func (m *mockIssueRepo) FindUserByID(context.Context, string) (*domain.User, err
 func (m *mockIssueRepo) FindInitialStatus(context.Context) (*domain.Status, error) {
 	return nil, m.unexpected("FindInitialStatus")
 }
+func (m *mockIssueRepo) FindStatusByID(context.Context, string) (*domain.Status, error) {
+	return nil, m.unexpected("FindStatusByID")
+}
 func (m *mockIssueRepo) Save(context.Context, *domain.Issue) (*domain.Issue, error) {
 	return nil, m.unexpected("Save")
 }
@@ -310,7 +313,7 @@ func newDeleteFixture(issue *domain.Issue, sprint *domain.Sprint) *deleteFixture
 	log := &callLog{}
 	issues := &mockIssueRepo{log: log, issue: issue, deleted: true}
 	sprints := &mockSprintRepo{log: log, sprint: sprint}
-	return &deleteFixture{log: log, issues: issues, sprints: sprints, svc: service.NewIssueService(issues, sprints)}
+	return &deleteFixture{log: log, issues: issues, sprints: sprints, svc: service.NewIssueService(issues, sprints, nil)}
 }
 
 func sprintWith(issues ...*domain.Issue) *domain.Sprint {

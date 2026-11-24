@@ -23,7 +23,8 @@ type IssueUseCases interface {
 	CreateIssue(ctx context.Context, name, typeID string, description *string, author *domain.User) (*domain.Issue, error)
 	FillAttributes(ctx context.Context, issueID string, attr service.AttributeData, user *domain.User) (*domain.Issue, error)
 	ViewIssue(ctx context.Context, issueID string, user *domain.User) (*domain.Issue, error)
-	EditIssue(ctx context.Context, issueID string, changes service.AttributeData, user *domain.User) (*domain.Issue, error)
+	EditIssue(ctx context.Context, issueID string, changes service.AttributeData, expectedVersion string, user *domain.User) (*domain.Issue, error)
+	ChangeIssueStatus(ctx context.Context, issueID, targetStatusID string, user *domain.User) (*domain.Issue, error)
 }
 
 type userKey struct{}
@@ -37,7 +38,24 @@ func UserFrom(ctx context.Context) *domain.User {
 	return u
 }
 
-func NewRouter(issues IssueUseCases, authenticate func(http.Handler) http.Handler) http.Handler {
+// RouterOption adds optional parts to the API.
+type RouterOption func(*routerConfig)
+
+type routerConfig struct {
+	lifecycle LifecycleUseCases
+}
+
+// WithLifecycle adds the endpoints that configure the status graph (LC-1 .. LC-3).
+func WithLifecycle(uc LifecycleUseCases) RouterOption {
+	return func(c *routerConfig) { c.lifecycle = uc }
+}
+
+func NewRouter(issues IssueUseCases, authenticate func(http.Handler) http.Handler, opts ...RouterOption) http.Handler {
+	var cfg routerConfig
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+
 	r := chi.NewRouter()
 	r.Use(middleware.Recoverer)
 	r.Route("/api", func(r chi.Router) {
@@ -46,6 +64,13 @@ func NewRouter(issues IssueUseCases, authenticate func(http.Handler) http.Handle
 		r.Get("/issues/{id}", viewIssue(issues))
 		r.Put("/issues/{id}", fillAttributes(issues))
 		r.Patch("/issues/{id}", editIssue(issues))
+		r.Post("/issues/{id}/status", changeIssueStatus(issues)) // LC-4
+
+		if cfg.lifecycle != nil {
+			r.Post("/statuses", defineStatus(cfg.lifecycle))                         // LC-1
+			r.Post("/transitions", defineTransition(cfg.lifecycle))                  // LC-2
+			r.Put("/transitions/{fromId}/{toId}", setTransitionRules(cfg.lifecycle)) // LC-3
+		}
 	})
 	return r
 }
@@ -184,8 +209,37 @@ func editIssue(uc IssueUseCases) http.HandlerFunc {
 		}
 		issue, err := uc.EditIssue(r.Context(), chi.URLParam(r, "id"), service.AttributeData{
 			Name: req.Name, TypeID: req.TypeID, Description: req.Description, AssigneeID: req.AssigneeID,
-			PriorityID: req.PriorityID, StartDate: req.StartDate, DueDate: req.DueDate, Version: req.Version,
-		}, user)
+			PriorityID: req.PriorityID, StartDate: req.StartDate, DueDate: req.DueDate,
+		}, req.Version, user)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, toDTO(issue))
+	}
+}
+
+type changeStatusRequest struct {
+	StatusID string `json:"statusId"`
+}
+
+// changeIssueStatus handles POST /api/issues/{id}/status (LC-4, LC-5).
+//
+//	401 no authenticated user    403 the transition exists but the user's rule does not allow them
+//	404 unknown issue            409 no such transition, or the issue was changed meanwhile
+//	422 missing or unknown statusId    200 updated, body = the saved issue
+func changeIssueStatus(uc IssueUseCases) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		user := UserFrom(r.Context())
+		if user == nil {
+			writeError(w, domain.ErrUnauthorized)
+			return
+		}
+		var req changeStatusRequest
+		if !decodeBody(w, r, &req) {
+			return
+		}
+		issue, err := uc.ChangeIssueStatus(r.Context(), chi.URLParam(r, "id"), req.StatusID, user)
 		if err != nil {
 			writeError(w, err)
 			return
@@ -223,7 +277,13 @@ func writeError(w http.ResponseWriter, err error) {
 	case errors.Is(err, domain.ErrNotFound):
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 	case errors.Is(err, domain.ErrConflict):
-		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusConflict, map[string]string{"error": domain.ErrConflict.Error()})
+	case errors.Is(err, domain.ErrStatusExists):
+		writeJSON(w, http.StatusConflict, map[string]string{"error": domain.ErrStatusExists.Error()})
+	case errors.Is(err, domain.ErrTransitionExists):
+		writeJSON(w, http.StatusConflict, map[string]string{"error": domain.ErrTransitionExists.Error()})
+	case errors.Is(err, domain.ErrTransitionNotAllowed):
+		writeJSON(w, http.StatusConflict, map[string]string{"error": domain.ErrTransitionNotAllowed.Error()})
 	case errors.Is(err, domain.ErrNoInitialStatus):
 		log.Printf("misconfiguration: %v", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "no initial status is configured"})

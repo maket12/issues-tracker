@@ -8,8 +8,17 @@ type Role struct {
 	Permissions []Permission
 }
 
+// HasPermission is `role.hasPermission(p)`: it asks every granted permission whether it equals p.
 func (r *Role) HasPermission(p Permission) bool {
-	return r != nil && slices.Contains(r.Permissions, p)
+	if r == nil {
+		return false
+	}
+	for _, granted := range r.Permissions {
+		if granted.Equals(p) {
+			return true
+		}
+	}
+	return false
 }
 
 // GetPermissions returns a copy of the role's permissions.
