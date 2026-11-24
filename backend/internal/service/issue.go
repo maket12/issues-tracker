@@ -19,6 +19,8 @@ type IssueRepository interface {
 	FindStatusByID(ctx context.Context, id string) (*domain.Status, error)
 	Save(ctx context.Context, issue *domain.Issue) (*domain.Issue, error)
 	Delete(ctx context.Context, issue *domain.Issue) (bool, error)
+	FindAll(ctx context.Context) ([]*domain.Issue, error)
+	FindAllSorted(ctx context.Context, attribute, direction string) ([]*domain.Issue, error)
 }
 
 type AttributeData struct {

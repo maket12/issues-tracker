@@ -111,6 +111,16 @@ func (m *lcIssueRepo) Delete(context.Context, *domain.Issue) (bool, error) {
 	return false, errors.New("unexpected call")
 }
 
+func (m *lcIssueRepo) FindAll(context.Context) ([]*domain.Issue, error) {
+	m.log.add("UNEXPECTED IssueRepository.FindAll")
+	return nil, errors.New("unexpected call")
+}
+
+func (m *lcIssueRepo) FindAllSorted(context.Context, string, string) ([]*domain.Issue, error) {
+	m.log.add("UNEXPECTED IssueRepository.FindAllSorted")
+	return nil, errors.New("unexpected call")
+}
+
 func withoutLookups(entries []string) []string {
 	var out []string
 	for _, e := range entries {

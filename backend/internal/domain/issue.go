@@ -129,6 +129,41 @@ func (i *Issue) GetStatus() *Status {
 	return i.Status
 }
 
+func (i *Issue) GetAuthor() *User {
+	if i == nil {
+		return nil
+	}
+	return i.Author
+}
+
+func (i *Issue) GetAssignee() *User {
+	if i == nil {
+		return nil
+	}
+	return i.Assignee
+}
+
+func (i *Issue) GetPriority() *Priority {
+	if i == nil {
+		return nil
+	}
+	return i.Priority
+}
+
+func (i *Issue) GetStartDate() Date {
+	if i == nil {
+		return Date{}
+	}
+	return i.StartDate
+}
+
+func (i *Issue) GetDueDate() *Date {
+	if i == nil {
+		return nil
+	}
+	return i.DueDate
+}
+
 // ChangeStatus is `issue.changeStatus(targetStatus)` from the LC-4 sequence diagram.
 // Whether the transition is allowed is decided by Lifecycle.CheckTransition before this is called.
 func (i *Issue) ChangeStatus(target *Status) error {

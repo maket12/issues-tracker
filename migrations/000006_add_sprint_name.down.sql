@@ -1,0 +1,2 @@
+ALTER TABLE Sprints
+  DROP COLUMN name;

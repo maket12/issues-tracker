@@ -24,6 +24,7 @@ type IssueUseCases interface {
 	FillAttributes(ctx context.Context, issueID string, attr service.AttributeData, user *domain.User) (*domain.Issue, error)
 	ViewIssue(ctx context.Context, issueID string, user *domain.User) (*domain.Issue, error)
 	EditIssue(ctx context.Context, issueID string, changes service.AttributeData, expectedVersion string, user *domain.User) (*domain.Issue, error)
+	DeleteIssue(ctx context.Context, issueID string, user *domain.User) (bool, error)
 	ChangeIssueStatus(ctx context.Context, issueID, targetStatusID string, user *domain.User) (*domain.Issue, error)
 }
 
@@ -42,13 +43,22 @@ func UserFrom(ctx context.Context) *domain.User {
 type RouterOption func(*routerConfig)
 
 type routerConfig struct {
+	auth      AuthUseCases
+	roles     RoleUseCases
 	lifecycle LifecycleUseCases
+	sprints   SprintUseCases
+	board     BoardUseCases
 }
 
 // WithLifecycle adds the endpoints that configure the status graph (LC-1 .. LC-3).
 func WithLifecycle(uc LifecycleUseCases) RouterOption {
 	return func(c *routerConfig) { c.lifecycle = uc }
 }
+
+func WithAuth(uc AuthUseCases) RouterOption      { return func(c *routerConfig) { c.auth = uc } }
+func WithRoles(uc RoleUseCases) RouterOption     { return func(c *routerConfig) { c.roles = uc } }
+func WithSprints(uc SprintUseCases) RouterOption { return func(c *routerConfig) { c.sprints = uc } }
+func WithBoard(uc BoardUseCases) RouterOption    { return func(c *routerConfig) { c.board = uc } }
 
 func NewRouter(issues IssueUseCases, authenticate func(http.Handler) http.Handler, opts ...RouterOption) http.Handler {
 	var cfg routerConfig
@@ -59,18 +69,45 @@ func NewRouter(issues IssueUseCases, authenticate func(http.Handler) http.Handle
 	r := chi.NewRouter()
 	r.Use(middleware.Recoverer)
 	r.Route("/api", func(r chi.Router) {
-		r.Use(authenticate)
-		r.Post("/issues", createIssue(issues))
-		r.Get("/issues/{id}", viewIssue(issues))
-		r.Put("/issues/{id}", fillAttributes(issues))
-		r.Patch("/issues/{id}", editIssue(issues))
-		r.Post("/issues/{id}/status", changeIssueStatus(issues)) // LC-4
-
-		if cfg.lifecycle != nil {
-			r.Post("/statuses", defineStatus(cfg.lifecycle))                         // LC-1
-			r.Post("/transitions", defineTransition(cfg.lifecycle))                  // LC-2
-			r.Put("/transitions/{fromId}/{toId}", setTransitionRules(cfg.lifecycle)) // LC-3
+		if cfg.auth != nil {
+			r.Post("/auth/register", register(cfg.auth)) // MA-1
+			r.Post("/auth/login", login(cfg.auth))       // MA-2
 		}
+
+		r.Group(func(r chi.Router) {
+			r.Use(authenticate)
+
+			if cfg.auth != nil {
+				r.Post("/auth/logout", logout(cfg.auth)) // MA-2
+			}
+			if cfg.roles != nil {
+				r.Put("/users/{id}/role", assignRole(cfg.roles)) // MA-3
+			}
+
+			r.Post("/issues", createIssue(issues))
+			r.Get("/issues/{id}", viewIssue(issues))
+			r.Put("/issues/{id}", fillAttributes(issues))
+			r.Patch("/issues/{id}", editIssue(issues))
+			r.Delete("/issues/{id}", deleteIssue(issues))            // IM-5
+			r.Post("/issues/{id}/status", changeIssueStatus(issues)) // LC-4
+
+			if cfg.lifecycle != nil {
+				r.Post("/statuses", defineStatus(cfg.lifecycle))                         // LC-1
+				r.Post("/transitions", defineTransition(cfg.lifecycle))                  // LC-2
+				r.Put("/transitions/{fromId}/{toId}", setTransitionRules(cfg.lifecycle)) // LC-3
+			}
+
+			if cfg.sprints != nil {
+				r.Post("/sprints", createSprint(cfg.sprints))                  // WO-1
+				r.Post("/sprints/{id}/issues", linkIssueToSprint(cfg.sprints)) // WO-2
+			}
+
+			if cfg.board != nil {
+				r.Get("/board", viewBoard(cfg.board))          // WO-3
+				r.Get("/board/filter", filterBoard(cfg.board)) // WO-4
+				r.Get("/board/sort", sortBoard(cfg.board))     // WO-5
+			}
+		})
 	})
 	return r
 }
@@ -248,6 +285,22 @@ func changeIssueStatus(uc IssueUseCases) http.HandlerFunc {
 	}
 }
 
+func deleteIssue(uc IssueUseCases) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		user := UserFrom(r.Context())
+		if user == nil {
+			writeError(w, domain.ErrUnauthorized)
+			return
+		}
+		deleted, err := uc.DeleteIssue(r.Context(), chi.URLParam(r, "id"), user)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"deleted": deleted})
+	}
+}
+
 func decodeBody(w http.ResponseWriter, r *http.Request, dst any) bool {
 	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
 	dec := json.NewDecoder(r.Body)
@@ -292,6 +345,25 @@ func writeError(w http.ResponseWriter, err error) {
 		w.Header().Set("Retry-After", "5")
 		writeJSON(w, http.StatusServiceUnavailable,
 			map[string]string{"error": "database is temporarily unavailable, please retry shortly"})
+	case errors.Is(err, domain.ErrUnauthorized), errors.Is(err, domain.ErrInvalidCredentials):
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+	case errors.Is(err, domain.ErrForbidden):
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "access denied"})
+	case errors.Is(err, domain.ErrNotFound):
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+	case errors.Is(err, domain.ErrConflict),
+		errors.Is(err, domain.ErrStatusExists),
+		errors.Is(err, domain.ErrTransitionExists),
+		errors.Is(err, domain.ErrTransitionNotAllowed),
+		errors.Is(err, domain.ErrEmailTaken),
+		errors.Is(err, domain.ErrSprintClosed),
+		errors.Is(err, domain.ErrIssueAlreadyInSprint):
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+	case errors.Is(err, domain.ErrNoInitialStatus),
+		errors.Is(err, domain.ErrNoDefaultRole),
+		errors.Is(err, domain.ErrUnsafeDefaultRole):
+		log.Printf("misconfiguration: %v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	default:
 		log.Printf("internal error: %v", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
