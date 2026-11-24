@@ -16,10 +16,15 @@ var (
 	ErrNotFound        = errors.New("not found")
 	ErrConflict        = errors.New("the issue was changed by someone else, reload it and try again")
 	ErrNoInitialStatus = errors.New("no initial status is configured")
+
+	// Errors of the issue lifecycle (LC-1 .. LC-5).
+	ErrStatusExists         = errors.New("a status with this name already exists")
+	ErrTransitionExists     = errors.New("this transition already exists")
+	ErrTransitionNotAllowed = errors.New("this status transition is not allowed")
 )
 
-type ValidationError struct { 
-	Fields map[string]string 
+type ValidationError struct {
+	Fields map[string]string
 }
 
 func NewValidation(field, msg string) *ValidationError {
@@ -37,7 +42,7 @@ func (e *ValidationError) Error() string {
 
 	sort.Strings(keys)
 	parts := make([]string, 0, len(keys))
-	
+
 	for _, k := range keys {
 		parts = append(parts, k+": "+e.Fields[k])
 	}
@@ -57,6 +62,11 @@ const (
 	ManageSprints      Permission = "MANAGE_SPRINTS"
 )
 
+// Equals is `permission.equals(requiredPermission)` from the MA-4 sequence diagram.
+func (p Permission) Equals(other Permission) bool {
+	return p == other
+}
+
 type IssueType struct {
 	ID          string
 	Name        string
@@ -74,14 +84,14 @@ type Status struct {
 	Name string
 }
 
-type Date struct{ 
-	time.Time 
+type Date struct {
+	time.Time
 }
 
 const dateLayout = "2006-01-02"
 
-func (d Date) MarshalJSON() ([]byte, error) { 
-	return json.Marshal(d.Format(dateLayout)) 
+func (d Date) MarshalJSON() ([]byte, error) {
+	return json.Marshal(d.Format(dateLayout))
 }
 
 func (d *Date) UnmarshalJSON(b []byte) error {
@@ -123,12 +133,12 @@ func (d *Date) Scan(src any) error {
 
 	default:
 		return fmt.Errorf("cannot scan %T into Date", src)
-		
+
 	}
 
 	return nil
 }
 
-func (d Date) Value() (driver.Value, error) { 
-	return d.Format(dateLayout), nil 
+func (d Date) Value() (driver.Value, error) {
+	return d.Format(dateLayout), nil
 }

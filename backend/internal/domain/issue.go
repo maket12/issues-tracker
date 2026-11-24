@@ -79,7 +79,6 @@ func (i *Issue) Edit(name string, issueType *IssueType, description *string, ass
 	return nil
 }
 
-
 func (i *Issue) IsAccessibleBy(u *User) bool {
 	if u == nil {
 		return false
@@ -98,7 +97,7 @@ func normaliseText(name string, description *string, problems map[string]string)
 	switch n := utf8.RuneCountInString(name); {
 	case n == 0:
 		problems["name"] = "is required"
-		
+
 	case n > MaxNameLength:
 		problems["name"] = "must be at most 200 characters"
 	}
@@ -112,4 +111,30 @@ func normaliseText(name string, description *string, problems map[string]string)
 		}
 	}
 	return name, text
+}
+
+// GetVersion returns the version token the issue was loaded with (MA-5).
+func (i *Issue) GetVersion() string {
+	if i == nil {
+		return ""
+	}
+	return i.Version
+}
+
+// GetStatus returns the current status of the issue (LC-4).
+func (i *Issue) GetStatus() *Status {
+	if i == nil {
+		return nil
+	}
+	return i.Status
+}
+
+// ChangeStatus is `issue.changeStatus(targetStatus)` from the LC-4 sequence diagram.
+// Whether the transition is allowed is decided by Lifecycle.CheckTransition before this is called.
+func (i *Issue) ChangeStatus(target *Status) error {
+	if target == nil || target.ID == "" {
+		return NewValidation("statusId", "is required")
+	}
+	i.Status = target
+	return nil
 }

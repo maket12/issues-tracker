@@ -16,6 +16,7 @@ type IssueRepository interface {
 	FindPriorityByID(ctx context.Context, id string) (*domain.Priority, error)
 	FindUserByID(ctx context.Context, id string) (*domain.User, error)
 	FindInitialStatus(ctx context.Context) (*domain.Status, error)
+	FindStatusByID(ctx context.Context, id string) (*domain.Status, error)
 	Save(ctx context.Context, issue *domain.Issue) (*domain.Issue, error)
 	Delete(ctx context.Context, issue *domain.Issue) (bool, error)
 }
@@ -28,17 +29,17 @@ type AttributeData struct {
 	PriorityID  string
 	StartDate   *domain.Date
 	DueDate     *domain.Date
-	Version     string // optional expected version for optimistic locking in IM-4
 }
 
 type IssueService struct {
-	repo IssueRepository
-	sprints SprintRepository
-	now  func() time.Time
+	repo       IssueRepository
+	sprints    SprintRepository
+	lifecycles LifecycleRepository
+	now        func() time.Time
 }
 
-func NewIssueService(repo IssueRepository, sprints SprintRepository) *IssueService {
-	return &IssueService{repo: repo, sprints: sprints, now: time.Now}
+func NewIssueService(repo IssueRepository, sprints SprintRepository, lifecycles LifecycleRepository) *IssueService {
+	return &IssueService{repo: repo, sprints: sprints, lifecycles: lifecycles, now: time.Now}
 }
 
 func (s *IssueService) CreateIssue(ctx context.Context, name, typeID string, description *string, author *domain.User) (*domain.Issue, error) {
@@ -117,8 +118,13 @@ func (s *IssueService) ViewIssue(ctx context.Context, issueID string, user *doma
 	return issue, nil
 }
 
-// EditIssue implements IM-4: Edit issue.
-func (s *IssueService) EditIssue(ctx context.Context, issueID string, changes AttributeData, user *domain.User) (*domain.Issue, error) {
+// EditIssue implements IM-4 (edit issue) and MA-5 (work simultaneously):
+// editIssue(issueId, changes, expectedVersion, user).
+//
+// expectedVersion is the version of the issue the user was looking at when they started editing. If the
+// issue was saved by someone else in the meantime, its version differs and the edit is rejected with
+// domain.ErrConflict ("refresh required"): the later save never overwrites the earlier one.
+func (s *IssueService) EditIssue(ctx context.Context, issueID string, changes AttributeData, expectedVersion string, user *domain.User) (*domain.Issue, error) {
 	if user == nil {
 		return nil, domain.ErrUnauthorized
 	}
@@ -127,18 +133,79 @@ func (s *IssueService) EditIssue(ctx context.Context, issueID string, changes At
 		return nil, domain.ErrForbidden
 	}
 
+	// IssueRepository.findById(issueId) -> issue
 	issue, err := s.repo.FindByID(ctx, issueID)
 	if err != nil {
 		return nil, fmt.Errorf("find issue: %w", err)
 	}
+	// issue.isAccessibleBy(user) -> true
 	if !issue.IsAccessibleBy(user) {
 		return nil, domain.ErrForbidden
 	}
-	if v := strings.TrimSpace(changes.Version); v != "" && v != issue.Version {
+
+	// issue.getVersion() -> currentVersion; [expectedVersion != currentVersion] -> conflictDetected
+	expectedVersion = strings.TrimSpace(expectedVersion)
+	if expectedVersion == "" {
+		return nil, domain.NewValidation("version", "is required: send the version you loaded")
+	}
+	if expectedVersion != issue.GetVersion() {
 		return nil, domain.ErrConflict
 	}
 
+	// issue.edit(changes), IssueRepository.save(issue): the repository saves only if nobody saved in between
 	return s.applyAttributes(ctx, issue, changes)
+}
+
+// ChangeIssueStatus implements LC-4 (change issue status) and LC-5 (verify transition right):
+// changeIssueStatus(issueId, targetStatusId, user).
+//
+// Only the transition rule decides: no rule for current -> target means domain.ErrTransitionNotAllowed,
+// a rule the user does not satisfy means domain.ErrForbidden. The save is guarded by the issue's version,
+// so a concurrent change of the issue makes this one fail with domain.ErrConflict.
+func (s *IssueService) ChangeIssueStatus(ctx context.Context, issueID, targetStatusID string, user *domain.User) (*domain.Issue, error) {
+	if user == nil {
+		return nil, domain.ErrUnauthorized
+	}
+
+	// IssueRepository.findById(issueId) -> issue
+	issue, err := s.repo.FindByID(ctx, issueID)
+	if err != nil {
+		return nil, fmt.Errorf("find issue: %w", err)
+	}
+
+	// IssueRepository.findStatusById(targetStatusId) -> targetStatus
+	targetStatusID = strings.TrimSpace(targetStatusID)
+	if targetStatusID == "" {
+		return nil, domain.NewValidation("statusId", "is required")
+	}
+	targetStatus, err := s.repo.FindStatusByID(ctx, targetStatusID)
+	if errors.Is(err, domain.ErrNotFound) {
+		return nil, domain.NewValidation("statusId", fmt.Sprintf("unknown status %q", targetStatusID))
+	}
+	if err != nil {
+		return nil, fmt.Errorf("find status: %w", err)
+	}
+
+	// LifecycleRepository.getLifecycle() -> lifecycle
+	lifecycle, err := s.lifecycles.GetLifecycle(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("get lifecycle: %w", err)
+	}
+
+	// lifecycle.checkTransition(issue, user, targetStatus) -> true
+	if _, err := lifecycle.CheckTransition(issue, user, targetStatus); err != nil {
+		return nil, err
+	}
+
+	// issue.changeStatus(targetStatus), IssueRepository.save(issue) -> updatedIssue
+	if err := issue.ChangeStatus(targetStatus); err != nil {
+		return nil, err
+	}
+	updated, err := s.repo.Save(ctx, issue)
+	if err != nil {
+		return nil, fmt.Errorf("save issue: %w", err)
+	}
+	return updated, nil
 }
 
 // DeleteIssue implements IM-5: deleteIssue(issueId, user). The returned bool is the confirmation.

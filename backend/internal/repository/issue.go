@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 
 	"github.com/jmoiron/sqlx"
@@ -61,6 +62,11 @@ func (r *IssueRepo) FindInitialStatus(ctx context.Context) (*domain.Status, erro
 	}
 	s.ID, s.Name = row.ID, row.Name
 	return &s, nil
+}
+
+// FindStatusByID returns the status with the given id, or domain.ErrNotFound (LC-4).
+func (r *IssueRepo) FindStatusByID(ctx context.Context, id string) (*domain.Status, error) {
+	return findStatus(ctx, r.db, id)
 }
 
 func (r *IssueRepo) Save(ctx context.Context, issue *domain.Issue) (*domain.Issue, error) {
@@ -137,6 +143,7 @@ const updateIssueSQL = "UPDATE Issue SET " +
 	"type = (SELECT `key` FROM IssueTypes WHERE id = ?), " +
 	"assignee = (SELECT `key` FROM Users WHERE id = ?), " +
 	"priority = (SELECT `key` FROM Priorities WHERE id = ?), " +
+	"status = (SELECT `key` FROM Statuses WHERE id = ?), " +
 	"startDate = ?, dueDate = ?, version = ? " +
 	"WHERE id = ? AND version = ?"
 
@@ -145,8 +152,11 @@ func updateIssue(ctx context.Context, tx *sqlx.Tx, i *domain.Issue) error {
 	if err != nil {
 		return err
 	}
+	if i.Status == nil {
+		return errors.New("repository: the issue has no status")
+	}
 	res, err := tx.ExecContext(ctx, updateIssueSQL,
-		i.Name, i.Description, i.Type.ID, userID(i.Assignee), priorityID(i.Priority),
+		i.Name, i.Description, i.Type.ID, userID(i.Assignee), priorityID(i.Priority), i.Status.ID,
 		i.StartDate, i.DueDate, newVersion, i.ID, i.Version)
 	if err != nil {
 		return translate(err)
